@@ -1,0 +1,1010 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Message board</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f5f6f8; --panel: #ffffff; --panel2: #f0f2f5; --border: #e2e5ea; --text: #1d2125; --muted: #687280;
+  --accent: #2f6fed; --accent-weak: #e7eefd; --ok: #1a9e55; --ok-weak: #e3f5ea; --warn: #b26b00; --warn-weak: #fdf2dc;
+  --bad: #d23b3b; --bad-weak: #fde7e7; --human: #7b4be0; --human-weak: #efe8fd;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1013; --panel: #15181d; --panel2: #1c2027; --border: #2a2f38; --text: #e3e6ea; --muted: #8f98a5;
+    --accent: #6b9bff; --accent-weak: #1b2846; --ok: #3cc477; --ok-weak: #13301f; --warn: #e3a33a; --warn-weak: #33270f;
+    --bad: #f06a6a; --bad-weak: #3a1818; --human: #a98bff; --human-weak: #261d40;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body { display: flex; flex-direction: column; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--text); background: var(--bg); }
+button { font: inherit; color: inherit; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+button.warn { color: var(--warn); }
+button.ghost { background: transparent; }
+button.small { padding: 1px 8px; font-size: 12px; }
+button.link { background: none; border: none; padding: 0 4px; color: var(--accent); font-size: 12px; }
+button.x { background: none; border: none; padding: 0 3px; color: var(--muted); font-size: 15px; line-height: 1; }
+button.x:hover { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+input, textarea, select { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; width: 100%; }
+textarea { resize: vertical; }
+input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent-weak); border-color: var(--accent); }
+a { color: var(--accent); }
+
+header { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.brand { font-weight: 650; font-size: 15px; white-space: nowrap; }
+.brand .logo { color: var(--accent); margin-right: 4px; }
+.spacer { flex: 1; }
+.seg { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.seg .seglabel { padding: 0 8px; color: var(--muted); font-size: 12px; }
+.seg button { border: none; border-left: 1px solid var(--border); border-radius: 0; background: transparent; padding: 3px 9px; }
+.seg button.on { background: var(--accent); color: #fff; }
+.me { color: var(--human); font-weight: 600; white-space: nowrap; }
+.live { font-size: 14px; color: var(--muted); }
+.live.ok { color: var(--ok); }
+.live.bad { color: var(--bad); }
+#btn-notify.on { color: var(--accent); border-color: var(--accent); }
+#banner .bn { padding: 6px 14px; border-bottom: 1px solid var(--border); }
+.bn.bad { background: var(--bad-weak); color: var(--bad); }
+.bn.warn { background: var(--warn-weak); color: var(--warn); }
+
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr) 370px; }
+#left, #right { overflow: auto; background: var(--panel); }
+#left { border-right: 1px solid var(--border); }
+#right { border-left: 1px solid var(--border); }
+#center { display: grid; grid-template-rows: minmax(140px, 38%) minmax(0, 1fr); min-height: 0; }
+#treepane { overflow: auto; border-bottom: 1px solid var(--border); background: var(--panel); }
+#threadpane { display: flex; flex-direction: column; min-height: 0; }
+#thread { flex: 1; overflow: auto; padding: 12px 18px 18px; }
+.phead { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.phead h2 { margin: 0; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); flex: 1; }
+.phead label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.phead input[type=checkbox] { width: auto; margin: 0; }
+.small { font-size: 12px; }
+.muted { color: var(--muted); }
+.nowrap { white-space: nowrap; }
+.empty { padding: 12px 14px; color: var(--muted); }
+.empty.big { padding: 48px 24px; text-align: center; }
+.count { background: var(--bad); color: #fff; border-radius: 9px; padding: 0 6px; font-size: 11px; margin-left: 4px; letter-spacing: 0; }
+.count:empty { display: none; }
+.tag { display: inline-block; font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 9px; background: var(--panel2); color: var(--muted); border: 1px solid var(--border); margin-left: 4px; white-space: nowrap; font-weight: 400; }
+.tag.human { color: var(--human); background: var(--human-weak); border-color: transparent; }
+.tag.bad { color: var(--bad); background: var(--bad-weak); border-color: transparent; }
+.tag.status { color: var(--ok); background: var(--ok-weak); border-color: transparent; }
+.tag.k-task, .tag.k-question { color: var(--warn); background: var(--warn-weak); border-color: transparent; }
+.tag.k-decision, .tag.k-finding { color: var(--accent); background: var(--accent-weak); border-color: transparent; }
+
+#agents, #claims { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.agent { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--panel); display: flex; flex-direction: column; gap: 3px; }
+.agent.focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-weak); }
+.agent.paused { border-color: var(--bad); background: var(--bad-weak); }
+.agent.gone { opacity: .6; }
+.arow { display: flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.agent.active .dot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-weak); }
+.agent.idle .dot { background: var(--warn); }
+.aname { font-weight: 600; color: var(--text); text-decoration: none; }
+.aname:hover { color: var(--accent); }
+.astatus { font-style: italic; }
+.pausebox { color: var(--bad); font-size: 12px; }
+.aclaims { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 0 2px 0 6px; max-width: 100%; }
+.chip .ctext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aactions { display: flex; gap: 6px; margin-top: 3px; }
+.claim { border-bottom: 1px solid var(--border); padding: 2px 2px 6px; }
+.claim:last-child { border-bottom: none; }
+.crow { display: flex; align-items: center; gap: 6px; word-break: break-all; }
+
+#tree { padding: 4px 0; }
+.tnode { display: flex; align-items: center; gap: 4px; padding: 3px 12px 3px 6px; cursor: pointer; white-space: nowrap; }
+.tnode:hover { background: var(--panel2); }
+.tnode.sel { background: var(--accent-weak); }
+.tnode.archived { opacity: .55; }
+.caret { width: 14px; text-align: center; color: var(--muted); flex: none; }
+.tlabel { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tlabel.untitled { color: var(--muted); }
+.tnode .tmeta { margin-left: auto; padding-left: 10px; }
+
+.crumbs { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.crumbs a { color: var(--muted); text-decoration: none; }
+.crumbs a:hover { color: var(--accent); }
+.ttitle { font-size: 16px; font-weight: 650; margin: 2px 0; }
+.tid { color: var(--muted); font-weight: 400; font-size: 12px; margin-right: 2px; }
+.tactions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.tbody, .pbody { white-space: pre-wrap; overflow-wrap: anywhere; }
+.tbody { padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin: 8px 0 12px; }
+.post { border-left: 2px solid var(--border); padding: 3px 0 3px 10px; margin: 8px 0; }
+.post.human { border-left-color: var(--human); }
+.post.target > .phead2 { background: var(--accent-weak); border-radius: 4px; }
+.phead2 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ptitle { font-weight: 600; }
+.pkids { margin-left: 8px; }
+.more { font-size: 12px; }
+.mention { color: var(--accent); font-weight: 600; }
+.mention.me { color: var(--human); background: var(--human-weak); border-radius: 4px; padding: 0 2px; }
+#replybox { border-top: 1px solid var(--border); padding: 8px 12px 10px; background: var(--panel); display: flex; flex-direction: column; gap: 6px; }
+#replybox .row { display: flex; gap: 8px; align-items: center; }
+#replybox select { width: auto; }
+
+#inbox { padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
+.inb { border: 1px solid var(--human); background: var(--human-weak); border-radius: 8px; padding: 6px 9px; cursor: pointer; overflow-wrap: anywhere; }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chips button { font-size: 11px; padding: 0 7px; border-radius: 10px; }
+.chips button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+#agent-filter { padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--accent-weak); }
+.ev { display: flex; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+.ev.click { cursor: pointer; }
+.ev.click:hover { background: var(--panel2); }
+.evicon { width: 18px; text-align: center; flex: none; }
+.evmain { min-width: 0; overflow-wrap: anywhere; }
+.ev.k-blocked, .ev.k-pause { background: var(--bad-weak); }
+.ev.k-override, .ev.k-overlap, .ev.k-git, .ev.k-force { background: var(--warn-weak); }
+
+dialog { border: 1px solid var(--border); border-radius: 10px; padding: 0; background: var(--panel); color: var(--text); width: min(580px, 94vw); }
+dialog::backdrop { background: rgba(0, 0, 0, .4); }
+.dform { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; }
+.dform h3 { margin: 0; font-size: 15px; }
+.dform label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.dform label.check { flex-direction: row; align-items: center; gap: 6px; }
+.dform label.check input { width: auto; }
+.dform .info { white-space: pre-wrap; margin: 0; color: var(--muted); }
+.dbuttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+#toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
+.toast { background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; padding: 8px 12px; box-shadow: 0 4px 16px rgba(0, 0, 0, .18); max-width: 440px; overflow-wrap: anywhere; }
+.toast.ok { border-left-color: var(--ok); }
+.toast.bad { border-left-color: var(--bad); }
+
+@media (max-width: 1150px) {
+  main { grid-template-columns: 270px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 36vh; }
+  #left { grid-row: 1; }
+  #right { grid-column: 1 / -1; border-left: none; border-top: 1px solid var(--border); }
+}
+@media (max-width: 760px) {
+  main { display: flex; flex-direction: column; overflow: auto; }
+  #left, #right { overflow: visible; border: none; }
+  #center { display: flex; flex-direction: column; }
+  #treepane { max-height: 45vh; }
+  #thread { overflow: visible; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">&#9638;</span>Message board</div>
+  <div id="summary" class="muted small"></div>
+  <div class="spacer"></div>
+  <div class="seg" id="enforce" title="How strictly agents are stopped before they edit inside someone else's claim or run risky git commands">
+    <span class="seglabel">Checks</span><button data-v="warn">warn</button><button data-v="block">block</button><button data-v="off">off</button>
+  </div>
+  <button id="btn-conventions" class="ghost" title="The shared working agreements every agent sees">Conventions</button>
+  <button id="btn-notify" class="ghost" title="Desktop notifications when an agent mentions you">Notify me</button>
+  <button id="btn-new" class="primary">New post</button>
+  <span id="me" class="me"></span>
+  <span id="live" class="live" title="Connecting">&#9679;</span>
+</header>
+<div id="banner"></div>
+<main>
+  <aside id="left">
+    <div class="phead"><h2>Agents</h2><label class="small"><input type="checkbox" id="show-gone"> show gone</label></div>
+    <div id="agents"></div>
+    <div class="phead"><h2>Claims</h2><button id="btn-claim" class="small">+ Claim</button></div>
+    <div id="claims"></div>
+  </aside>
+  <section id="center">
+    <div id="treepane">
+      <div class="phead"><h2>Board</h2><label class="small"><input type="checkbox" id="show-archived"> show archived</label></div>
+      <div id="tree"></div>
+    </div>
+    <div id="threadpane">
+      <div id="thread"></div>
+      <div id="replybox" hidden>
+        <div class="small"><span id="replyto-label"></span> <button id="reply-reset" class="link">reply to the whole thread instead</button></div>
+        <textarea id="reply-text" rows="3" placeholder="Write a reply. @name notifies someone, @all notifies every agent. Ctrl+Enter sends."></textarea>
+        <div class="row"><select id="reply-kind" title="Kind of post"></select><span class="spacer"></span><button id="reply-send" class="primary">Send</button></div>
+      </div>
+    </div>
+  </section>
+  <aside id="right">
+    <div class="phead"><h2>Your inbox<span id="inbox-count" class="count"></span></h2><button id="btn-seen" class="small" hidden>Mark all read</button></div>
+    <div id="inbox"></div>
+    <div class="phead"><h2>Activity</h2><div id="filters" class="chips"></div></div>
+    <div id="agent-filter" hidden></div>
+    <div id="activity"></div>
+  </aside>
+</main>
+<dialog id="dlg"></dialog>
+<div id="toasts"></div>
+<script nonce="{{NONCE}}">
+"use strict";
+const TOKEN = "{{TOKEN}}";
+const KINDS = ["message", "thread", "group", "task", "decision", "question", "finding"];
+const REASONS = { mention: "mentioned you", reply: "replied to you", subscribed: "posted", edited: "edited your post" };
+const FILTERS = {
+  all: null,
+  posts: ["post"],
+  coordination: ["blocked", "override", "overlap", "git", "claim", "release", "force", "expire", "pause", "resume", "config"],
+  presence: ["join", "end", "status"],
+};
+const ICONS = {
+  post: "\u{1F4AC}", blocked: "⛔", override: "⚠", overlap: "⚠", git: "⚠", claim: "\u{1F512}",
+  release: "\u{1F513}", force: "\u{1F513}", expire: "⌛", pause: "⏸", resume: "▶", config: "⚙",
+  join: "+", end: "−", status: "✎", edit: "✎",
+};
+const $ = (id) => document.getElementById(id);
+
+let S = null;          // latest /api/state, with nodes and events merged in
+const NODES = new Map();  // every node seen so far, updated with each delta
+let EVENTS = [];
+const EVENTS_KEPT = 500;
+let REV = 0;           // newest node revision we have
+let LAST_EVENT = 0;    // newest event id we have
+let nodesVersion = 0;
+let IDX = null;        // indexes over S
+let selected = null;   // node shown in the thread pane
+let detail = null;     // /api/node for it
+let detailSig = "";
+let replyTo = null;
+let skew = 0;
+let tick = 0;
+let busy = false;
+let knownInbox = null;
+const sigs = {};
+const expanded = new Set();
+let expandedInit = false;
+const ui = load("ui", { filter: "all", agent: null, showGone: false, showArchived: false, notify: false });
+
+// ---------------------------------------------------------------- helpers
+
+function load(key, fallback) {
+  try { return Object.assign({}, fallback, JSON.parse(localStorage.getItem("board." + key) || "{}")); } catch (e) { return fallback; }
+}
+function save() { try { localStorage.setItem("board.ui", JSON.stringify(ui)); } catch (e) { /* private mode */ } }
+
+function h(tag, props, ...kids) {
+  const el = document.createElement(tag);
+  if (props) {
+    for (const [k, v] of Object.entries(props)) {
+      if (v === null || v === undefined || v === false) continue;
+      if (k === "class") el.className = v;
+      else if (k === "style") Object.assign(el.style, v);
+      else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? "" : String(v));
+    }
+  }
+  for (const kid of kids.flat(Infinity)) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    el.append(kid instanceof Node ? kid : String(kid));  // strings become text, never HTML
+  }
+  return el;
+}
+
+async function api(path, body) {
+  const opts = { headers: { "X-Board-Token": TOKEN } };
+  if (body !== undefined) {
+    opts.method = "POST";
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  let data = {};
+  try { data = await res.json(); } catch (e) { /* no body */ }
+  if (!res.ok) throw new Error(data.error || res.status + " " + res.statusText);
+  return data;
+}
+
+function nowS() { return Date.now() / 1000 + skew; }
+function ago(ts) {
+  const d = Math.max(0, nowS() - ts);
+  if (d < 60) return "just now";
+  if (d < 3600) return Math.floor(d / 60) + "m ago";
+  if (d < 172800) return Math.floor(d / 3600) + "h ago";
+  return Math.floor(d / 86400) + "d ago";
+}
+function inFuture(ts) {
+  const d = Math.max(0, ts - nowS());
+  if (d < 3600) return Math.max(1, Math.floor(d / 60)) + "m";
+  if (d < 172800) return Math.floor(d / 3600) + "h";
+  return Math.floor(d / 86400) + "d";
+}
+function when(ts) { return new Date(ts * 1000).toLocaleString(); }
+function timeEl(ts, cls) { return h("time", { class: cls || null, title: when(ts) }, ago(ts)); }
+function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+
+function rich(text) {
+  // Text with #ids turned into links and @mentions highlighted. Never parsed as HTML.
+  const frag = document.createDocumentFragment();
+  const s = text || "";
+  const re = /(#\d+)|(@[A-Za-z0-9][A-Za-z0-9_-]*)/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(s))) {
+    if (m.index > last) frag.append(s.slice(last, m.index));
+    if (m[1]) {
+      const id = Number(m[1].slice(1));
+      frag.append(h("a", { href: "#", onclick: (e) => { e.preventDefault(); e.stopPropagation(); select(id); } }, m[1]));
+    } else {
+      const me = S && m[2].slice(1).toLowerCase() === S.me.name;
+      frag.append(h("span", { class: "mention" + (me ? " me" : "") }, m[2]));
+    }
+    last = re.lastIndex;
+  }
+  if (last < s.length) frag.append(s.slice(last));
+  return frag;
+}
+
+function toast(msg, kind) {
+  const t = h("div", { class: "toast " + (kind || "") }, msg);
+  $("toasts").append(t);
+  setTimeout(() => t.remove(), kind === "bad" ? 8000 : 3500);
+}
+
+function index() {
+  const byId = new Map();
+  const kids = new Map();
+  for (const n of S.nodes) byId.set(n.id, n);
+  for (const n of S.nodes) {
+    const p = n.parent_id ?? 0;
+    if (!kids.has(p)) kids.set(p, []);
+    kids.get(p).push(n);
+  }
+  IDX = { byId, kids, agents: new Map(S.agents.map((a) => [a.id, a])), size: new Map() };
+}
+function size(id) {
+  if (IDX.size.has(id)) return IDX.size.get(id);
+  let total = 0;
+  for (const c of IDX.kids.get(id) || []) total += 1 + size(c.id);
+  IDX.size.set(id, total);
+  return total;
+}
+function label(n) {
+  if (n.title) return n.title;
+  const s = n.snippet || "";
+  return "“" + (s.length > 90 ? s.slice(0, 88) + "…" : s) + "”";
+}
+function pathOf(id) {
+  const parts = [];
+  for (let n = IDX.byId.get(id); n; n = IDX.byId.get(n.parent_id)) parts.unshift(n.title || "#" + n.id);
+  return parts.join(" › ");
+}
+function isHidden(n) {
+  for (let x = n; x; x = IDX.byId.get(x.parent_id)) if (x.archived) return true;
+  return false;
+}
+function isInside(id, ancestor) {
+  for (let x = IDX.byId.get(id); x; x = IDX.byId.get(x.parent_id)) if (x.id === ancestor) return true;
+  return false;
+}
+function spaces() { return (IDX.kids.get(0) || []).filter((n) => n.path && !n.archived); }
+function spaceOf(id) {
+  let n = IDX.byId.get(id);
+  while (n && n.parent_id) n = IDX.byId.get(n.parent_id);
+  return n && n.path ? n : null;
+}
+function placeOptions(extra) {
+  const out = [["", "/ (top level)"]];
+  const walk = (parent, depth) => {
+    for (const n of IDX.kids.get(parent) || []) {
+      if (n.archived || !n.title) continue;
+      out.push([String(n.id), "   ".repeat(depth) + n.title]);
+      walk(n.id, depth + 1);
+    }
+  };
+  walk(0, 0);
+  if (extra != null && !out.some(([v]) => v === String(extra))) {
+    const n = IDX.byId.get(Number(extra));
+    if (n) out.push([String(n.id), "#" + n.id + " " + label(n)]);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- dialogs
+
+function dialog({ title, info, fields = [], submit = "OK", danger = false }) {
+  return new Promise((resolve) => {
+    const dlg = $("dlg");
+    const inputs = {};
+    const form = h("form", { class: "dform" }, h("h3", {}, title), info ? h("p", { class: "info" }, info) : null);
+    for (const f of fields) {
+      let input;
+      if (f.type === "textarea") input = h("textarea", { rows: f.rows || 4, placeholder: f.placeholder || null });
+      else if (f.type === "select") input = h("select", {}, f.options.map(([v, l]) => h("option", { value: v }, l)));
+      else if (f.type === "checkbox") input = h("input", { type: "checkbox" });
+      else input = h("input", { type: "text", autocomplete: "off", placeholder: f.placeholder || null });
+      if (f.type === "checkbox") input.checked = !!f.value;
+      else if (f.value !== undefined && f.value !== null) input.value = f.value;
+      if (f.required) input.required = true;
+      inputs[f.name] = input;
+      form.append(f.type === "checkbox" ? h("label", { class: "check" }, input, f.label) : h("label", {}, f.label, input));
+    }
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      dlg.close();
+      resolve(value);
+    };
+    form.append(h("div", { class: "dbuttons" },
+      h("button", { type: "button", class: "ghost", onclick: () => done(null) }, "Cancel"),
+      h("button", { type: "submit", class: danger ? "danger" : "primary" }, submit)));
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const values = {};
+      for (const [k, el] of Object.entries(inputs)) values[k] = el.type === "checkbox" ? el.checked : el.value;
+      done(values);
+    });
+    form.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); }
+    });
+    dlg.oncancel = () => done(null);
+    dlg.replaceChildren(form);
+    dlg.showModal();
+    const first = form.querySelector("textarea, input[type=text], select");
+    if (first) first.focus();
+  });
+}
+async function confirmBox(title, info, submit) {
+  return (await dialog({ title, info, submit, danger: true })) !== null;
+}
+async function act(action, body, okMessage) {
+  try {
+    const r = await api("/api/" + action, body);
+    if (okMessage) toast(okMessage, "ok");
+    await refresh(true);
+    return r;
+  } catch (e) {
+    toast(e.message, "bad");
+    return null;
+  }
+}
+function notified(r) {
+  let s = r.notified && r.notified.length ? " · notified " + r.notified.map((n) => "@" + n).join(", ") : "";
+  if (r.unknown && r.unknown.length) s += " · nobody is called " + r.unknown.map((n) => "@" + n).join(", ");
+  return s;
+}
+
+// ---------------------------------------------------------------- actions
+
+async function newPost(pre = {}) {
+  const fallback = selected ?? (spaces()[0] ? spaces()[0].id : "");
+  const parent = pre.parent ?? fallback;
+  const v = await dialog({
+    title: "New post",
+    fields: [
+      { name: "parent", label: "Post in", type: "select", options: placeOptions(parent), value: String(parent ?? "") },
+      { name: "title", label: "Title (optional; a title makes it a thread others can reply in)", value: pre.title || "" },
+      { name: "kind", label: "Kind", type: "select", options: KINDS.map((k) => [k, k]), value: pre.kind || "message" },
+      { name: "body", label: "Message", type: "textarea", rows: 6, value: pre.body || "",
+        placeholder: "@name notifies someone, @all notifies every agent. Agents see it after their next tool call." },
+    ],
+    submit: "Post",
+  });
+  if (!v) return;
+  const kind = v.kind === "message" && v.title.trim() ? "" : v.kind;
+  const r = await act("post", { parent: v.parent, title: v.title, body: v.body, kind });
+  if (r) {
+    toast("Posted #" + r.id + notified(r), "ok");
+    select(v.title.trim() || !v.parent ? r.id : Number(v.parent));
+  }
+}
+
+async function sendReply() {
+  const text = $("reply-text").value;
+  if (!text.trim() || replyTo == null) return;
+  $("reply-send").disabled = true;
+  try {
+    const r = await api("/api/post", { parent: replyTo, body: text, kind: $("reply-kind").value });
+    $("reply-text").value = "";
+    toast("Posted #" + r.id + notified(r), "ok");
+    await refresh(true);
+  } catch (e) {
+    toast(e.message, "bad");
+  } finally {
+    $("reply-send").disabled = false;
+  }
+}
+
+async function editNode(n) {
+  const kinds = KINDS.includes(n.kind) ? KINDS : [n.kind, ...KINDS];
+  const v = await dialog({
+    title: "Edit #" + n.id,
+    fields: [
+      { name: "title", label: "Title", value: n.title || "" },
+      { name: "kind", label: "Kind", type: "select", options: kinds.map((k) => [k, k]), value: n.kind },
+      { name: "status", label: "Status (free text: open, done, blocked...)", value: n.status || "" },
+      { name: "body", label: "Body", type: "textarea", rows: 10, value: n.body || "" },
+    ],
+    submit: "Save",
+  });
+  if (!v) return;
+  const changes = {};
+  for (const k of ["title", "kind", "status", "body"]) if ((v[k] || "") !== (n[k] || "")) changes[k] = v[k];
+  if (Object.keys(changes).length) await act("edit", Object.assign({ id: n.id }, changes), "Saved #" + n.id);
+}
+
+async function moveNode(n) {
+  const options = placeOptions().filter(([id]) => !id || (Number(id) !== n.id && !isInside(Number(id), n.id)));
+  const v = await dialog({
+    title: "Move #" + n.id + " " + label(n),
+    info: "Everything below it moves too.",
+    fields: [{ name: "parent", label: "Move under", type: "select", options, value: String(n.parent_id ?? "") }],
+    submit: "Move",
+  });
+  if (v) await act("move", { id: n.id, parent: v.parent }, "Moved #" + n.id);
+}
+
+async function archiveNode(n) {
+  await act("archive", { id: n.id, archived: !n.archived }, (n.archived ? "Restored #" : "Archived #") + n.id);
+}
+
+async function claimDialog() {
+  const sp = spaces();
+  const current = selected != null ? spaceOf(selected) : null;
+  const v = await dialog({
+    title: "Claim files or resources",
+    info: "Agents are stopped once before editing inside your claim, and told why.\nIn the block setting, they're stopped until you release it.",
+    fields: [
+      { name: "resources", label: "Paths, globs or named resources, one per line", type: "textarea", rows: 3, required: true,
+        placeholder: "src/payments/**\nport:5173" },
+      { name: "space", label: "Relative paths are inside", type: "select",
+        options: [["", "(absolute paths only)"]].concat(sp.map((s) => [String(s.id), s.title + "  —  " + s.path])),
+        value: String(current ? current.id : sp[0] ? sp[0].id : "") },
+      { name: "note", label: "Note shown to agents (why)", placeholder: "e.g. reviewing this, hands off" },
+      { name: "minutes", label: "Keep it", type: "select",
+        options: [["60", "1 hour"], ["240", "4 hours"], ["1440", "1 day"], ["43200", "until I release it"]], value: "240" },
+    ],
+    submit: "Claim",
+  });
+  if (!v) return;
+  const r = await act("claim", v);
+  if (!r) return;
+  if (r.claimed) { toast("Claimed", "ok"); return; }
+  const list = r.conflicts.map((c) => c.resource + " overlaps @" + c.agent + "'s claim on " + c.claim + (c.note ? " (“" + c.note + "”)" : "")).join("\n");
+  if (await confirmBox("That overlaps other claims", list + "\n\nClaim anyway? The owners are notified.", "Claim anyway")) {
+    await act("claim", Object.assign({}, v, { force: true }), "Claimed");
+  }
+}
+
+async function releaseClaim(c) {
+  const theirs = c.agent !== S.me.name;
+  if (await confirmBox("Release " + c.display + "?", theirs ? "@" + c.agent + " is told that you released it." : "", "Release")) {
+    await act("release", { claim_id: c.id }, "Released " + c.display);
+  }
+}
+
+async function pauseAgent(a) {
+  const v = await dialog({
+    title: "Pause @" + a.name,
+    info: "Until you resume it, the agent can't edit files, run shell commands (other than board commands), start subagents or use MCP tools. It sees your reason the next time it tries.",
+    fields: [{ name: "reason", label: "Reason, shown to the agent", type: "textarea", rows: 3, required: true,
+      placeholder: "e.g. Stop: you and @x are both rewriting the auth module. Wait until I sort it out." }],
+    submit: "Pause",
+    danger: true,
+  });
+  if (v) await act("pause", { agent_id: a.id, reason: v.reason }, "Paused @" + a.name);
+}
+
+async function resumeAgent(a) { await act("resume", { agent_id: a.id }, "Resumed @" + a.name); }
+
+async function removeAgent(a) {
+  if (await confirmBox("Remove @" + a.name + "?", "Marks it as gone and releases its claims. If its session is still running, it rejoins with its next tool call.", "Remove")) {
+    await act("remove", { agent_id: a.id }, "Removed @" + a.name);
+  }
+}
+
+async function setEnforce(value) {
+  if (!S || value === S.config.enforce) return;
+  const explain = {
+    warn: "Agents are stopped once (with an explanation) before editing inside someone else's claim or running a risky git command while others are active. A retry goes through.",
+    block: "Edits inside someone else's claim are refused until the claim is released or expires.",
+    off: "Agents are never stopped. Claims become purely informational.",
+  }[value];
+  if (await confirmBox("Set checks to “" + value + "”?", explain, "Set " + value)) {
+    await act("config", { key: "enforce", value }, "Checks: " + value);
+  }
+}
+
+async function toggleNotify() {
+  if (!("Notification" in window)) { toast("This browser doesn't support desktop notifications.", "bad"); return; }
+  if (!ui.notify && Notification.permission !== "granted") {
+    const p = await Notification.requestPermission();
+    if (p !== "granted") { toast("Notifications weren't allowed.", "bad"); return; }
+  }
+  ui.notify = !ui.notify;
+  save();
+  renderHeader();
+  toast(ui.notify ? "You'll get a desktop notification when an agent mentions you." : "Desktop notifications off.");
+}
+
+// ---------------------------------------------------------------- rendering
+
+function renderHeader() {
+  const agents = S.agents.filter((a) => a.kind !== "human");
+  const active = agents.filter((a) => a.state === "active").length;
+  const idle = agents.filter((a) => a.state === "idle").length;
+  const claims = S.claims.filter((c) => !c.soft).length;
+  $("summary").textContent = plural(active, "active agent") + (idle ? ", " + idle + " idle" : "") + " · " + plural(claims, "claim");
+  for (const b of $("enforce").querySelectorAll("button")) b.classList.toggle("on", b.dataset.v === S.config.enforce);
+  $("me").textContent = "@" + S.me.name;
+  $("btn-notify").classList.toggle("on", !!ui.notify);
+  $("btn-notify").textContent = ui.notify ? "Notifying" : "Notify me";
+}
+
+function renderBanner() {
+  const parts = [];
+  const paused = S.agents.filter((a) => a.paused);
+  if (paused.length) {
+    parts.push(h("div", { class: "bn bad" }, "⏸ Paused: " + paused.map((a) => "@" + a.name).join(", ") +
+      ". Their edits, shell commands, subagents and MCP tools are refused until you resume them."));
+  }
+  if (S.config.enforce === "off") {
+    parts.push(h("div", { class: "bn warn" }, "Checks are off: agents aren't stopped before editing claimed files or running risky git commands."));
+  }
+  $("banner").replaceChildren(...parts);
+}
+
+function claimChip(c) {
+  return h("span", { class: "chip", title: (c.note ? c.note + "\n" : "") + c.resource + "\nexpires " + inFuture(c.expires_at) + " after the owner's last activity" },
+    h("span", { class: "ctext" }, "\u{1F512} " + c.display),
+    h("button", { class: "x", title: "Release this claim", onclick: (e) => { e.stopPropagation(); releaseClaim(c); } }, "×"));
+}
+
+function agentCard(a) {
+  const isMe = a.id === S.me.id;
+  const space = a.space_id ? IDX.byId.get(a.space_id) : null;
+  const mine = S.claims.filter((c) => c.agent_id === a.id);
+  const hard = mine.filter((c) => !c.soft);
+  const soft = mine.filter((c) => c.soft);
+  const wt = a.worktree && a.repo && a.worktree !== a.repo ? a.worktree.split(/[\\/]/).pop() : null;
+  const seen = a.state === "active" && nowS() - a.last_seen < 60 ? "active now" : a.state + " · " + ago(a.last_seen);
+  const where = [space ? space.title : null, wt ? "worktree " + wt : null].filter(Boolean).join(" · ");
+  return h("div", { class: "agent " + a.state + (a.paused ? " paused" : "") + (ui.agent === a.id ? " focus" : "") },
+    h("div", { class: "arow" },
+      h("span", { class: "dot", title: a.state }),
+      h("a", { href: "#", class: "aname", title: "Show only this participant's activity",
+        onclick: (e) => { e.preventDefault(); ui.agent = ui.agent === a.id ? null : a.id; save(); renderAgents(); renderActivity(); } }, "@" + a.name),
+      a.kind === "human" ? h("span", { class: "tag human" }, isMe ? "you" : "human") : null,
+      a.paused ? h("span", { class: "tag bad" }, "paused") : null,
+      h("span", { class: "spacer" }),
+      h("span", { class: "muted small nowrap", title: "last activity " + when(a.last_seen) }, seen)),
+    where ? h("div", { class: "muted small" }, where) : null,
+    a.status ? h("div", { class: "astatus" }, a.status) : null,
+    a.paused ? h("div", { class: "pausebox" }, "Paused by @" + (a.paused_by || "?") + ": " + (a.pause_reason || "")) : null,
+    hard.length ? h("div", { class: "aclaims" }, hard.map(claimChip)) : null,
+    soft.length ? h("div", { class: "muted small", title: soft.map((c) => c.display + " (" + ago(c.edited_at) + ")").join("\n") },
+      "edited: " + soft.slice(0, 5).map((c) => c.display).join(", ") + (soft.length > 5 ? " …" : "")) : null,
+    isMe || a.kind === "human" ? null : h("div", { class: "aactions" },
+      h("button", { class: "small", onclick: () => newPost({ parent: a.space_id, body: "@" + a.name + " " }) }, "Message"),
+      a.paused
+        ? h("button", { class: "small", onclick: () => resumeAgent(a) }, "Resume")
+        : h("button", { class: "small warn", onclick: () => pauseAgent(a) }, "Pause"),
+      a.state !== "active" ? h("button", { class: "small ghost", onclick: () => removeAgent(a) }, "Remove") : null));
+}
+
+function renderAgents() {
+  const order = { active: 0, idle: 1, gone: 2 };
+  const list = S.agents
+    .filter((a) => ui.showGone || a.state !== "gone")
+    .sort((a, b) => (b.paused - a.paused) || ((a.kind === "human") - (b.kind === "human")) || (order[a.state] - order[b.state]) || (b.last_seen - a.last_seen));
+  const box = $("agents");
+  if (!list.length) {
+    box.replaceChildren(h("div", { class: "empty" }, "No agents yet. A Claude Code session joins as soon as it runs a tool with the board hooks installed."));
+    return;
+  }
+  box.replaceChildren(...list.map(agentCard));
+}
+
+function renderClaims() {
+  const hard = S.claims.filter((c) => !c.soft);
+  const box = $("claims");
+  if (!hard.length) { box.replaceChildren(h("div", { class: "empty" }, "No claims right now.")); return; }
+  box.replaceChildren(...hard.map((c) => h("div", { class: "claim" },
+    h("div", { class: "crow" }, h("b", { title: c.resource }, c.display), h("span", { class: "spacer" }),
+      h("button", { class: "x", title: "Release", onclick: () => releaseClaim(c) }, "×")),
+    h("div", { class: "muted small" }, "@" + c.agent + (c.note ? " · " + c.note : "") + " · expires " + inFuture(c.expires_at) + " after last activity"))));
+}
+
+function inTree(n, depth) {
+  if (!ui.showArchived && n.archived) return false;
+  return depth <= 1 || !!n.title;  // replies deep inside threads are read in the thread pane
+}
+
+function renderTree() {
+  if (!expandedInit) {
+    for (const n of IDX.kids.get(0) || []) if (n.path) expanded.add(n.id);
+    expandedInit = true;
+  }
+  const rows = [];
+  const walk = (n, depth) => {
+    const kids = (IDX.kids.get(n.id) || []).filter((c) => inTree(c, depth + 1));
+    const open = expanded.has(n.id);
+    const count = size(n.id);
+    rows.push(h("div", { class: "tnode" + (n.id === selected ? " sel" : "") + (n.archived ? " archived" : ""),
+      style: { paddingLeft: 6 + depth * 16 + "px" }, onclick: () => select(n.id) },
+      h("span", { class: "caret", onclick: (e) => { e.stopPropagation(); toggle(n.id); } }, kids.length ? (open ? "▾" : "▸") : ""),
+      h("span", { class: "tlabel" + (n.title ? "" : " untitled") }, label(n)),
+      n.kind !== "message" ? h("span", { class: "tag k-" + n.kind }, n.kind) : null,
+      n.status ? h("span", { class: "tag status" }, n.status) : null,
+      h("span", { class: "tmeta muted small nowrap" },
+        (n.author ? "@" + n.author + " · " : "") + (count ? plural(count, "post") + " · " : "") + ago(n.activity_at))));
+    if (open && kids.length) {
+      const sorted = depth === 0 ? kids.slice().sort((a, b) => b.activity_at - a.activity_at) : kids;
+      for (const c of sorted) walk(c, depth + 1);
+    }
+  };
+  const top = (IDX.kids.get(0) || []).filter((n) => inTree(n, 0))
+    .sort((a, b) => (b.key === "conventions") - (a.key === "conventions") || b.activity_at - a.activity_at);
+  for (const n of top) walk(n, 0);
+  $("tree").replaceChildren(...rows);
+}
+
+function toggle(id) {
+  if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+  renderTree();
+}
+
+function findIn(n, id) {
+  if (n.id === id) return n;
+  for (const c of n.children) {
+    const f = findIn(c, id);
+    if (f) return f;
+  }
+  return null;
+}
+
+function postEl(p) {
+  return h("div", { class: "post" + (p.author_kind === "human" ? " human" : "") + (p.id === replyTo ? " target" : "") },
+    h("div", { class: "phead2" },
+      h("span", { class: "tid" }, "#" + p.id),
+      h("b", {}, p.author ? "@" + p.author : "(board)"),
+      p.author_kind === "human" ? h("span", { class: "tag human" }, "human") : null,
+      p.kind !== "message" ? h("span", { class: "tag k-" + p.kind }, p.kind) : null,
+      p.status ? h("span", { class: "tag status" }, p.status) : null,
+      p.title ? h("span", { class: "ptitle" }, p.title) : null,
+      h("span", { class: "spacer" }),
+      timeEl(p.created_at, "muted small"),
+      h("button", { class: "link", onclick: () => { setReply(p.id); $("reply-text").focus(); } }, "reply"),
+      p.title || p.children.length || p.more ? h("button", { class: "link", onclick: () => select(p.id) }, "open") : null),
+    p.body ? h("div", { class: "pbody" }, rich(p.body)) : null,
+    p.more ? h("div", { class: "more" }, h("a", { href: "#", onclick: (e) => { e.preventDefault(); select(p.id); } }, plural(p.more, "more post") + " inside →")) : null,
+    p.children.length ? h("div", { class: "pkids" }, p.children.map(postEl)) : null);
+}
+
+function renderThread() {
+  const box = $("thread");
+  if (!detail) {
+    box.replaceChildren(h("div", { class: "empty big" },
+      h("p", {}, "Pick a space or a thread above to read it."),
+      h("p", { class: "muted" }, "Agents post here to split work, announce changes and ask each other questions. You can reply, @mention agents, pause them or release their claims.")));
+    $("replybox").hidden = true;
+    return;
+  }
+  const n = detail.node;
+  const crumbs = [];
+  for (const t of detail.trail) {
+    crumbs.push(h("a", { href: "#", onclick: (e) => { e.preventDefault(); select(t.id); } }, t.title || "#" + t.id), " › ");
+  }
+  const head = h("div", {},
+    crumbs.length ? h("div", { class: "crumbs" }, crumbs) : null,
+    h("div", { class: "ttitle" }, h("span", { class: "tid" }, "#" + n.id), " ",
+      n.title || (n.author ? "Post by @" + n.author : "Post"),
+      h("span", { class: "tag k-" + n.kind }, n.kind),
+      n.status ? h("span", { class: "tag status" }, n.status) : null,
+      n.archived ? h("span", { class: "tag" }, "archived") : null),
+    h("div", { class: "muted small" },
+      n.author ? "@" + n.author + " · " : "", timeEl(n.created_at),
+      n.edited_by ? " · edited by @" + n.edited_by : "", n.path ? " · " + n.path : ""),
+    h("div", { class: "tactions" },
+      h("button", { class: "small", onclick: () => { setReply(n.id); $("reply-text").focus(); } }, "Reply"),
+      h("button", { class: "small", onclick: () => newPost({ parent: n.id }) }, "New post inside"),
+      h("button", { class: "small", onclick: () => editNode(n) }, "Edit"),
+      n.key ? null : h("button", { class: "small", onclick: () => moveNode(n) }, "Move"),
+      h("button", { class: "small ghost", onclick: () => archiveNode(n) }, n.archived ? "Restore" : "Archive")));
+  const replies = n.children.length
+    ? h("div", {}, n.children.map(postEl),
+      n.omitted ? h("div", { class: "empty" }, plural(n.omitted, "less recently active post") + " not shown. Use the board tree or search.") : null)
+    : h("div", { class: "empty" }, n.more ? plural(n.more, "post") + " inside." : "No replies yet.");
+  const keep = box.scrollTop;
+  box.replaceChildren(head, n.body ? h("div", { class: "tbody" }, rich(n.body)) : null, replies);
+  box.scrollTop = keep;
+  $("replybox").hidden = false;
+  setReply(replyTo != null && findIn(n, replyTo) ? replyTo : n.id, true);
+}
+
+function setReply(id, quiet) {
+  const previous = replyTo;
+  replyTo = id;
+  const target = detail ? findIn(detail.node, id) : null;
+  const what = target ? (target.title || (target.author ? "@" + target.author + "'s post" : "")) : "";
+  $("replyto-label").replaceChildren("Replying to ", h("b", {}, "#" + id + (what ? " " + what : "")), " as @" + S.me.name);
+  $("reply-reset").hidden = !detail || id === detail.node.id;
+  if (!quiet && previous !== id) renderThread();
+}
+
+function renderInbox() {
+  const box = $("inbox");
+  $("inbox-count").textContent = S.inbox.length ? String(S.inbox.length) : "";
+  $("btn-seen").hidden = !S.inbox.length;
+  if (!S.inbox.length) {
+    box.replaceChildren(h("div", { class: "empty" }, "Nothing for you. Agents can @" + S.me.name + " you when they need a decision."));
+  } else {
+    box.replaceChildren(...S.inbox.slice().reverse().map((n) => h("div", { class: "inb", onclick: () => { if (n.node_id) select(n.node_id); } },
+      h("div", {}, n.author ? h("b", {}, "@" + n.author) : null, " " + (REASONS[n.reason] || ""), " ", timeEl(n.created_at, "muted small")),
+      h("div", { class: "small" }, rich(n.text ? n.text + (n.title ? ": " + n.title : "") : (n.title ? n.title + (n.snippet ? " — " : "") : "") + (n.snippet || ""))))));
+  }
+  const ids = new Set(S.inbox.map((n) => n.id));
+  if (knownInbox !== null && ui.notify && "Notification" in window && Notification.permission === "granted") {
+    for (const n of S.inbox) {
+      if (knownInbox.has(n.id)) continue;
+      const note = new Notification("Message board: " + (n.author ? "@" + n.author + " " : "") + (REASONS[n.reason] || "notification"),
+        { body: n.text || n.title || n.snippet || "", tag: "board-" + n.id });
+      note.onclick = () => { window.focus(); if (n.node_id) select(n.node_id); };
+    }
+  }
+  knownInbox = ids;
+  document.title = (S.inbox.length ? "(" + S.inbox.length + ") " : "") + "Message board";
+}
+
+function activityItems() {
+  const items = S.events.map((e) => ({ at: e.at, kind: e.kind, text: e.text, node: e.node_id, who: [e.agent_id, e.other_id] }));
+  for (const n of S.nodes) {
+    if (!n.author || (!ui.showArchived && isHidden(n))) continue;
+    items.push({ at: n.created_at, kind: "post", node: n.id, n });
+  }
+  items.sort((a, b) => b.at - a.at);
+  return items;
+}
+
+function renderActivity() {
+  $("filters").replaceChildren(...Object.keys(FILTERS).map((f) => h("button", { class: ui.filter === f ? "on" : "",
+    onclick: () => { ui.filter = f; save(); renderActivity(); } }, f)));
+  const focus = ui.agent != null ? IDX.agents.get(ui.agent) : null;
+  if (ui.agent != null && !focus) ui.agent = null;
+  $("agent-filter").hidden = !focus;
+  if (focus) {
+    $("agent-filter").replaceChildren("Only @" + focus.name + " ",
+      h("button", { class: "link", onclick: () => { ui.agent = null; save(); renderAgents(); renderActivity(); } }, "show everyone"));
+  }
+  let items = activityItems();
+  if (FILTERS[ui.filter]) items = items.filter((i) => FILTERS[ui.filter].includes(i.kind));
+  if (focus) items = items.filter((i) => (i.kind === "post" ? i.n.author === focus.name : i.who.includes(focus.id)));
+  items = items.slice(0, 250);
+  if (!items.length) { $("activity").replaceChildren(h("div", { class: "empty" }, "Nothing yet.")); return; }
+  $("activity").replaceChildren(...items.map((i) => {
+    let content;
+    if (i.kind === "post") {
+      const n = i.n;
+      const parent = n.parent_id ? IDX.byId.get(n.parent_id) : null;
+      content = h("div", {}, h("b", {}, "@" + n.author), " in ", h("span", { class: "muted" }, parent ? pathOf(parent.id) : "/"), ": ",
+        n.title ? h("span", {}, h("b", {}, n.title), n.snippet ? " — " : "") : null,
+        rich(n.snippet.length > 220 ? n.snippet.slice(0, 218) + "…" : n.snippet));
+    } else {
+      content = h("div", {}, i.text);
+    }
+    return h("div", { class: "ev k-" + i.kind + (i.node ? " click" : ""), onclick: i.node ? () => select(i.node) : null },
+      h("span", { class: "evicon" }, ICONS[i.kind] || "•"),
+      h("div", { class: "evmain" }, content, timeEl(i.at, "muted small")));
+  }));
+}
+
+// ---------------------------------------------------------------- data flow
+
+async function loadDetail() {
+  if (selected == null) { detail = null; return; }
+  try {
+    detail = await api("/api/node?id=" + selected);
+  } catch (e) {
+    toast(e.message, "bad");
+    selected = null;
+    detail = null;
+  }
+}
+
+async function select(id) {
+  if (id == null || !IDX) return;
+  selected = id;
+  replyTo = id;
+  for (let x = IDX.byId.get(id); x; x = IDX.byId.get(x.parent_id)) if (x.id !== id) expanded.add(x.id);
+  const n = IDX.byId.get(id);
+  detailSig = n ? String(n.activity_at) : "";
+  await loadDetail();
+  renderTree();
+  renderThread();
+  $("thread").scrollTop = 0;
+}
+
+function changed(key, value, force) {
+  const json = JSON.stringify(value);
+  if (!force && sigs[key] === json) return false;
+  sigs[key] = json;
+  return true;
+}
+
+async function refresh(force) {
+  if (busy && !force) return;
+  busy = true;
+  try {
+    // Only nodes and events that changed since the last poll come back; merge them in.
+    const s = await api("/api/state?rev=" + REV + "&event=" + LAST_EVENT);
+    skew = s.now - Date.now() / 1000;
+    if (s.full) NODES.clear();
+    for (const n of s.nodes) NODES.set(n.id, n);
+    const nodesChanged = s.full || s.nodes.length > 0 || !S;
+    if (nodesChanged) nodesVersion += 1;
+    EVENTS = s.events_full ? s.events : EVENTS.concat(s.events);
+    if (EVENTS.length > EVENTS_KEPT) EVENTS = EVENTS.slice(-EVENTS_KEPT);
+    REV = s.rev;
+    LAST_EVENT = s.last_event;
+    s.nodes = nodesChanged || !S ? [...NODES.values()].sort((a, b) => a.created_at - b.created_at || a.id - b.id) : S.nodes;
+    s.events = EVENTS;
+    S = s;
+    if (nodesChanged || !IDX) index();
+    IDX.agents = new Map(S.agents.map((a) => [a.id, a]));
+    $("live").className = "live ok";
+    $("live").title = "Live: updates every 2 seconds";
+    tick += 1;
+    const clock = Math.floor(tick / 15);  // re-render relative times every ~30s
+    if (changed("header", [s.agents.map((a) => [a.state, a.kind]), s.claims.length, s.config, s.me, ui.notify], force)) renderHeader();
+    if (changed("banner", [s.agents.map((a) => [a.name, a.paused]), s.config.enforce], force)) renderBanner();
+    if (changed("agents", [s.agents, s.claims, ui.agent, ui.showGone, clock], force)) { renderAgents(); renderClaims(); }
+    if (changed("tree", [nodesVersion, selected, ui.showArchived, [...expanded], clock], force)) renderTree();
+    if (changed("inbox", [s.inbox, clock], force)) renderInbox();
+    if (changed("activity", [LAST_EVENT, nodesVersion, ui.filter, ui.agent, ui.showArchived, clock], force)) renderActivity();
+    if (selected == null && !detail && changed("thread", "empty", false)) renderThread();
+    if (selected != null) {
+      const n = IDX.byId.get(selected);
+      if (!n) {
+        selected = null;
+        detail = null;
+        renderThread();
+      } else if (force || detailSig !== String(n.activity_at)) {
+        detailSig = String(n.activity_at);
+        await loadDetail();
+        renderThread();
+      }
+    }
+  } catch (e) {
+    $("live").className = "live bad";
+    $("live").title = "Disconnected: " + e.message;
+    if (/token/.test(e.message)) {
+      $("banner").replaceChildren(h("div", { class: "bn bad" }, "The board server restarted. Reload this page to reconnect."));
+    }
+  } finally {
+    busy = false;
+  }
+}
+
+// ---------------------------------------------------------------- wiring
+
+for (const b of $("enforce").querySelectorAll("button")) b.addEventListener("click", () => setEnforce(b.dataset.v));
+$("btn-new").addEventListener("click", () => newPost());
+$("btn-claim").addEventListener("click", claimDialog);
+$("btn-notify").addEventListener("click", toggleNotify);
+$("btn-seen").addEventListener("click", () => act("seen", {}, "Inbox cleared"));
+$("btn-conventions").addEventListener("click", () => {
+  const c = S && S.nodes.find((n) => n.key === "conventions");
+  if (c) select(c.id);
+});
+$("reply-send").addEventListener("click", sendReply);
+$("reply-reset").addEventListener("click", () => setReply(detail ? detail.node.id : replyTo));
+$("reply-text").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendReply(); }
+});
+$("reply-kind").replaceChildren(...["message", "decision", "question", "task", "finding"].map((k) => h("option", { value: k }, k)));
+$("show-gone").checked = !!ui.showGone;
+$("show-gone").addEventListener("change", (e) => { ui.showGone = e.target.checked; save(); renderAgents(); });
+$("show-archived").checked = !!ui.showArchived;
+$("show-archived").addEventListener("change", (e) => { ui.showArchived = e.target.checked; save(); renderTree(); renderActivity(); });
+
+refresh(true);
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

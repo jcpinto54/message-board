@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "board-demo",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["scripts/demo.py", "--port", "8765", "--no-open"],
+      "port": 8765
+    }
+  ]
+}

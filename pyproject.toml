@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "message-board"
+version = "0.1.0"
+description = "A shared, threaded message board that lets the AI coding agents on one machine coordinate."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+board = "msgboard.cli:main"
+
+[tool.setuptools]
+packages = ["msgboard"]
+
+[tool.setuptools.package-data]
+msgboard = ["web/*.html"]
