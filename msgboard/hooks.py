@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from typing import Any, Dict, List, Optional, Sequence
@@ -83,12 +84,18 @@ def handle(event: str, payload: Dict[str, Any], ctx: Any) -> Optional[Dict[str, 
             model.end_session(con, agent)
         return None
     me = model.ensure_agent(con, session_id, cwd)
-    if event == "session-start":
-        model.purge(con)
-        model.mark_briefed(con, me)
-        return _context("SessionStart", render.briefing(con, me, ctx.command))
     if event == "pre-tool-use":
         return pre_tool_use(con, me, payload, cwd, ctx.command)
+    # The board stays quiet for an agent that's alone in its repository (all worktrees counted).
+    together = me["paused_at"] is not None or bool(model.active_in_space(con, me))
+    if event == "session-start":
+        model.purge(con)
+        if not together:
+            # Also after /compact: whatever it knew about the board is gone, so brief it again later.
+            model.mark_briefed(con, me, False)
+            return None
+        model.mark_briefed(con, me)
+        return _context("SessionStart", render.briefing(con, me, ctx.command))
     notes: List[str] = []
     if me["paused_at"] is not None:
         notes.append(render.paused_notice(con, me, ctx.command))
@@ -98,8 +105,13 @@ def handle(event: str, payload: Dict[str, Any], ctx: Any) -> Optional[Dict[str, 
         return None
     # Subagents share the session id; leave the inbox and the briefing to the main agent.
     if not payload.get("agent_id"):
-        if me["briefed_at"] is None:
-            # A session that was already running when the hooks were installed never saw SessionStart.
+        if not together:
+            # Alone: only what's addressed to it (an @mention, a reply, a human resuming it).
+            text = render.delivery(con, me, ctx.command, direct_only=True, introduce=me["briefed_at"] is None)
+            if text:
+                notes.append(text)
+        elif me["briefed_at"] is None:
+            # Someone else just started working here (or the hooks were installed mid-session).
             model.mark_briefed(con, me)
             notes.append(render.briefing(con, me, ctx.command))
         else:
@@ -144,20 +156,93 @@ def _notify_once(con, me, owner_id: int, key: str, window_s: float, text: str) -
 # ---------------------------------------------------------------- before a tool runs
 
 
-_SEPARATORS = re.compile(r"[;&|\n`]|\$\(")
+_HEREDOC_RE = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+_PYTHONS = ("python", "python.exe", "python3", "python3.exe", "py", "py.exe")
 
 
 def is_board_command(shell_command: str) -> bool:
-    """A single `board ...` (or python .../board.py ...) command, with nothing chained to it."""
+    """A single `board ...` (or python .../board.py ...) command, with nothing chained to it.
+
+    Quoted text and a trailing heredoc are the message, not commands; but anything the shell would
+    run or expand inside them ($(...), backticks), and any output redirection, makes it not one."""
     text = shell_command.strip()
     if text.startswith("&"):  # PowerShell call operator
         text = text[1:].strip()
-    if not text or _SEPARATORS.search(text):
+    command = _command_part(text)
+    if command is None:
         return False
-    first = text.split(None, 1)[0].strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    try:
+        # Windows paths are full of backslashes, which POSIX shell rules would read as escapes.
+        words = [w.strip("\"'") for w in shlex.split(command, posix=os.name != "nt")]
+    except ValueError:
+        return False
+    if not words:
+        return False
+    first = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
     if first in ("board", "board.exe", "board.cmd"):
         return True
-    return first in ("python", "python.exe", "python3", "py", "py.exe") and "board.py" in text
+    if first not in _PYTHONS:
+        return False
+    rest = words[1:]
+    while rest and rest[0].startswith("-"):
+        if rest[0] in ("-c", "-m") or not re.fullmatch(r"-[BEIOSsuqv]+", rest[0]):
+            return False  # code given inline, a module, or a flag we don't know: not just the board
+        rest = rest[1:]
+    return bool(rest) and rest[0].replace("\\", "/").rsplit("/", 1)[-1].lower() == "board.py"
+
+
+def _command_part(text: str) -> Optional[str]:
+    """The command line without a trailing heredoc body; None if anything else would run."""
+    i, n = 0, len(text)
+    heredoc = None
+    while i < n:
+        c = text[i]
+        if c == "'":
+            j = text.find("'", i + 1)
+            if j == -1:
+                return None
+            i = j + 1
+            continue
+        if c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == "\\":
+                    i += 1
+                elif text[i] == "`" or text.startswith("$(", i):
+                    return None  # the shell runs these even inside double quotes
+                i += 1
+            if i >= n:
+                return None
+            i += 1
+            continue
+        if c == "<" and text.startswith("<<", i):
+            m = _HEREDOC_RE.match(text, i)
+            if m is None or heredoc is not None:
+                return None
+            heredoc = m
+            i = m.end()
+            continue
+        if c == "\n":
+            if heredoc is None:
+                return None
+            return text[:heredoc.start()] if _heredoc_ok(text[i + 1 :], heredoc) else None
+        if c in ";&|>`" or text.startswith(("$(", "<("), i):
+            return None
+        i += 1
+    return text if heredoc is None else None
+
+
+def _heredoc_ok(rest: str, m: "re.Match[str]") -> bool:
+    """The heredoc body ends with its delimiter and nothing follows; unquoted, it expands nothing."""
+    lines = rest.split("\n")
+    strip_tabs, quoted, delimiter = m.group(1) == "-", bool(m.group(2)), m.group(3)
+    for k, line in enumerate(lines):
+        if (line.lstrip("\t") if strip_tabs else line).rstrip("\r") == delimiter:
+            if any(more.strip() for more in lines[k + 1 :]):
+                return False
+            body = "\n".join(lines[:k])
+            return quoted or not ("`" in body or "$(" in body)
+    return False
 
 
 def pre_tool_use(con, me, payload: Dict[str, Any], cwd: str, command: str) -> Optional[Dict[str, Any]]:
@@ -278,7 +363,7 @@ def _after_edit(con, me, target: str, cwd: str) -> List[str]:
     key = path_key(target, cwd)
     shown_abs = display_path(target, cwd)
     shown = relative_to(shown_abs, me["worktree"])
-    model.touch_file(con, me["id"], shown_abs, key)
+    model.touch_file(con, me["id"], shown_abs, key, locate(shown_abs))
     window = db.config_number(con, "touch_minutes") * 60
     notes: List[str] = []
     seen = set()
@@ -309,6 +394,51 @@ def _after_edit(con, me, target: str, cwd: str) -> List[str]:
                 con,
                 "overlap",
                 f"@{me['name']} and @{c['agent_name']} both edited {shown}",
+                agent_id=me["id"],
+                other_id=c["agent_id"],
+            )
+    notes += _other_worktrees(con, me, key, shown, window)
+    return notes
+
+
+def _other_worktrees(con, me, key: str, shown: str, window: float) -> List[str]:
+    """Heads-ups (never stops) when the same file is claimed or being edited in another worktree."""
+    notes: List[str] = []
+    seen = set()
+    t = time.time()
+    for c in model.claims_in_other_worktrees(con, key, me["id"]):
+        if c["agent_id"] in seen:
+            continue
+        seen.add(c["agent_id"])
+        gate = f"worktree:{key}:{c['agent_id']}"
+        if model.gate_passed(con, me["id"], gate, window):
+            continue
+        model.set_gate(con, me["id"], gate)
+        where = c["agent_worktree"] or "another worktree"
+        if c["soft"]:
+            what = f"also edited {shown} {render.ago(c['expires_at'] - c['ttl'], t)}"
+            theirs = "which you also edited"
+        else:
+            note = f' ("{c["note"]}")' if c["note"] else ""
+            what = f"has claimed {relative_to(c['resource'], c['agent_worktree'])}{note}, which covers {shown}"
+            theirs = f"inside your claim on {relative_to(c['resource'], c['agent_worktree'])}"
+        notes.append(
+            f"[message board] Heads-up: @{c['agent_name']} {what}, in another worktree of this repository "
+            f"({where}). You can't overwrite each other's files, but expect a merge conflict when the branches "
+            "are merged. Coordinate on the board if it matters."
+        )
+        with db.tx(con):
+            model.notify(
+                con,
+                c["agent_id"],
+                "overlap",
+                text=f"@{me['name']} is editing {shown} in another worktree ({me['worktree']}), {theirs}. "
+                "Expect a merge conflict when the branches are merged.",
+            )
+            model.event(
+                con,
+                "overlap",
+                f"@{me['name']} and @{c['agent_name']} are both changing {shown}, in different worktrees",
                 agent_id=me["id"],
                 other_id=c["agent_id"],
             )

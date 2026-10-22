@@ -60,11 +60,13 @@ class ServerTest(BoardTestCase):
         self.assertEqual(self.request("GET", "/api/state")[0], 200)
         self.assertEqual(self.request("GET", "/", host=f"localhost:{self.port}")[0], 200)
 
-    def test_page_embeds_the_token_and_a_strict_csp(self):
+    def test_page_never_contains_the_token_and_has_a_strict_csp(self):
+        # Anything on this machine can fetch the page, so the token only travels in the link's fragment.
         status, headers, raw = self.request("GET", "/", token=False)
         self.assertEqual(status, 200)
         html = raw.decode("utf-8")
-        self.assertIn(self.app.token, html)
+        self.assertNotIn(self.app.token, html)
+        self.assertIn("location.hash", html)
         csp = headers["Content-Security-Policy"]
         nonce = re.search(r"'nonce-([^']+)'", csp).group(1)
         self.assertIn(f'<script nonce="{nonce}">', html)

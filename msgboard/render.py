@@ -304,14 +304,55 @@ def notification_line(con: sqlite3.Connection, n: Row) -> str:
     return text
 
 
-def delivery(con: sqlite3.Connection, me: Row, command: str = "board") -> Optional[str]:
-    """New notifications for an agent, marked as delivered. None when there's nothing new."""
+def post_in_full(con: sqlite3.Connection, node: Row, names: Names, how: str = "") -> List[str]:
+    """A post with its whole body, for someone who was waiting for it."""
+    parent = model.get_node(con, node["parent_id"]) if node["parent_id"] else None
+    head = f"#{node['id']} {names(node['author_id'])}{how} in {path_text(con, parent, 30)}, {ago(node['created_at'])}:"
+    lines = [head]
+    if node["title"]:
+        lines.append(f"  [{node['kind']}] {node['title']}")
+    lines += ["  " + line for line in (node["body"] or "").splitlines()]
+    return lines
+
+
+def arrivals(con: sqlite3.Connection, notices: Sequence[Row]) -> List[str]:
+    """Notifications someone was waiting for: posts in full, notices as they are."""
+    names = Names(con)
+    lines: List[str] = []
+    for n in notices:
+        node = model.get_node(con, n["node_id"]) if n["node_id"] is not None else None
+        if node is None or n["text"]:
+            lines.append(notification_line(con, n))
+        else:
+            lines += post_in_full(con, node, names, " " + REASONS.get(n["reason"], n["reason"]))
+    return lines
+
+
+# What still reaches an agent that's alone in its repository: things addressed to it.
+BACKGROUND_REASONS = ("subscribed", "conventions")
+
+
+def delivery(
+    con: sqlite3.Connection, me: Row, command: str = "board", direct_only: bool = False, introduce: bool = False
+) -> Optional[str]:
+    """New notifications for an agent, marked as delivered. None when there's nothing new.
+
+    direct_only leaves out new posts it merely follows (they wait for the agent's briefing);
+    introduce says what the board is, for an agent that hasn't been briefed."""
     rows = model.undelivered(con, me["id"])
+    if direct_only:
+        rows = [r for r in rows if r["reason"] not in BACKGROUND_REASONS]
     if not rows:
         return None
     limit = max(1, int(db.config_number(con, "notify_max")))
     model.mark_delivered(con, [r["id"] for r in rows])
-    lines = [f"[message board] {plural(len(rows), 'new notification')} for @{me['name']}:"]
+    lines = []
+    if introduce:
+        lines.append(
+            f"[message board] You are @{me['name']} on the message board shared by the AI agents and humans "
+            f"on this machine. `{command} help` explains it."
+        )
+    lines.append(f"[message board] {plural(len(rows), 'new notification')} for @{me['name']}:")
     lines += [notification_line(con, r) for r in rows[:limit]]
     if len(rows) > limit:
         lines.append(f"- ...and {len(rows) - limit} more: `{command} inbox`")
@@ -372,6 +413,9 @@ def agent_line(
         parts.append(f"{state}, last seen {ago(a['last_seen'], t)}")
     if a["status"]:
         parts.append(f'"{a["status"]}"')
+    waiting = model.waiting_on(a, t)
+    if waiting:
+        parts.append(f"waiting on {waiting}")
     return " | ".join(parts)
 
 
@@ -431,7 +475,8 @@ def claim_block(c: Row, shown: str, resource: str, strict: bool, window_s: float
         f"[message board] Coordination check: {shown} is inside {'the human ' if human else ''}@{c['agent_name']}'s "
         f"claim on {resource}{note}. {_owner_state(c, t)}. They have been told you want to edit it.",
         f'Coordinate before you edit: ask them (`{command} post . "@{c["agent_name"]} ..."` or reply in their '
-        f"thread), check `{command} who`, or work on something else first.",
+        f"thread, then `{command} wait <that post's id>` for the answer), check `{command} who`, or work on "
+        "something else first.",
     ]
     if human:
         lines.append(
@@ -495,7 +540,9 @@ def briefing(con: sqlite3.Connection, me: Row, command: str = "board") -> str:
         "same repository and worktree. The shared message board is how you coordinate with them: split "
         "the work, announce changes that affect others, ask and answer questions, share findings, and "
         "claim files before you edit them.",
-        f"Run it as a shell command: `{command} <command>`. `{command} help` prints the full manual.",
+        f"Run it as a shell command: `{command} <command>`. `{command} help` prints the full manual. "
+        f"To wait for an answer, use `{command} wait <thread id>` (in the background if you can keep working), "
+        "not a polling loop.",
     ]
     if command != "board":
         lines.append(f"(Wherever the conventions or the manual say `board`, run `{command}`.)")
@@ -601,10 +648,10 @@ def _conventions(con: sqlite3.Connection, home: Optional[Row]) -> List[str]:
     lines: List[str] = []
     conventions = model.node_by_key(con, "conventions")
     if conventions is not None and conventions["body"]:
-        lines += ["", f"Board conventions (#{conventions['id']}, shared and editable):"]
+        lines += ["", f"Board conventions (#{conventions['id']}, set by the humans):"]
         lines += _clip(conventions["body"], CONVENTIONS_MAX, "`board conventions`")
     if home is not None:
-        local = model.child_titled(con, home["id"], "conventions")
+        local = model.repo_conventions(con, home["id"])
         if local is not None and local["body"]:
             lines.append(f"Conventions for {home['title']} (#{local['id']}):")
             lines += _clip(local["body"], REPO_CONVENTIONS_MAX, f"`board read {local['id']}`")

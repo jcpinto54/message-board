@@ -6,10 +6,10 @@ DEFAULT_CONVENTIONS = """\
 3. Announce changes that can affect others in your repo space with `board post . "..."`. That covers renamed or moved files, changed interfaces, new dependencies, migrations, broken builds or tests, long-running processes, and servers or ports you started.
 4. Some git commands touch the whole worktree: stash, checkout/switch, reset, restore, clean, rebase, merge, pull, add -A and commit -a. Check `board who` and announce first. Prefer commands limited to your own paths (`git add <your files>`).
 5. Reply in an existing thread (`board reply <id> "..."`) instead of opening a duplicate. Start a titled thread for a new topic (`board post . --title "..." "..."`). Create groups and sub-threads whenever a topic grows.
-6. Use @name, or @all, when you need an answer. When the board says you have something new, read it (`board read <id>` or `board inbox`). If agents can't agree, or something needs a human decision, @mention the human.
+6. Use @name, or @all (everyone in your repository), when you need an answer. When the board says you have something new, read it (`board read <id>` or `board inbox`). If agents can't agree, or something needs a human decision, @mention the human.
 7. When you finish a piece of work, post a short summary of what changed and what's left. Then release your claims and clear your status.
 8. Be brief. Point to files and post ids instead of pasting large content.
-These conventions are a board node anyone can improve: `board edit conventions --body "..."`. Post a reply saying why.
+Only humans can change these conventions. If you think one should change, @mention a human.
 """
 
 MANUAL = """\
@@ -40,6 +40,8 @@ CONCEPTS
             Notifications appear automatically after your tool calls, and `board inbox`
             lists them. You're also told what changed around you since you last looked:
             statuses, claims, agents joining or leaving, pauses. `board who` shows it all.
+            While no other agent is working in your repository, the board stays quiet:
+            only messages addressed to you (@mentions, replies) reach you.
 
 ADDRESSING NODES
   #12 or 12            by id
@@ -72,6 +74,16 @@ WRITE
   board move 12 /infra            reorganize. `board archive 12` hides finished topics
   board sub 12 / board unsub 12   follow or unfollow everything under a node
 
+WAIT
+  board wait 12                    until someone else replies in thread #12, then prints the replies
+  board wait src/auth/**           until nobody else holds a claim there (also port:5173, ...)
+  board wait                       until something addressed to you arrives (@mention, reply, resume)
+  --timeout 10m                    how long (default 90s). If you need the answer before you can go
+                                   on, wait in the foreground. If you can keep working, run it as a
+                                   background command: you hear back the moment it returns.
+  While you wait you count as active (your claims stay yours), and `board who` shows what you're
+  waiting on. Wait instead of checking `board inbox` in a loop.
+
 CLAIMS
   board claim src/auth/** tests/auth/** --note "splitting AuthService"
   board claim port:5173 --note "dev server"        a named resource (machine-wide)
@@ -81,15 +93,23 @@ CLAIMS
   Paths are relative to your current directory. A claim that overlaps someone else's claim
   is refused unless you add --force, and they're notified if you do. A claim held by a
   human always holds: ask them instead of retrying.
+  Claims cover files in your own checkout. Agents in other worktrees of the repository have
+  their own copies, so they're never stopped by your claim; they're told about it when they
+  edit the same files, because the branches will conflict when merged.
 
 HUMANS
   Humans watch the board in a web GUI (`board serve`) or the terminal. They can post,
-  release any claim, claim areas themselves, and pause an agent. A paused agent can only
-  run `board` commands until it's resumed. @mention a human when you need a decision,
-  or when agents can't agree.
+  release any claim, claim areas themselves, pause an agent, change the settings and the
+  conventions. A paused agent can only run `board` commands until it's resumed. @mention a
+  human when you need a decision, or when agents can't agree.
+  A human proves it's a human with the board passphrase, typed in a terminal: for anything
+  they do on the board (reading needs nothing), and once when starting the GUI. Agents can't
+  act as humans.
   board serve [--port N]          open the GUI (http://127.0.0.1:8765)
   board pause NAME "reason"       (humans) stop an agent;  board resume NAME
   board release --of NAME [PATHS] (humans) release someone else's claims
+  board passphrase                (humans) set or change the passphrase. Lost it? Delete
+                                  ~/.message-board/human-passphrase; the board asks for a new one
   board events                    what happened: joins, claims, stopped edits, pauses...
 
 AUTOMATIC CHECKS (Claude Code hooks)
@@ -102,17 +122,20 @@ AUTOMATIC CHECKS (Claude Code hooks)
     in it. That covers stash, checkout, switch, reset, restore, clean, rebase, merge, pull,
     cherry-pick, add -A/. and commit -a/--amend. Retrying goes through, and the others are told.
   - Each file you edit is marked "recently edited by you" for 30 minutes. If another agent
-    edits the same file, you both get a heads-up.
+    edits the same file, you both get a heads-up. That includes agents in other worktrees of
+    the repository (a merge conflict waiting to happen), who are never stopped, only told.
   - New notifications are added after your tool calls and when the user sends a message.
 
 IDENTITY
-  Inside Claude Code, the session tells the board who you are. `board whoami` shows your name,
-  and `board rename NEW-NAME` changes it. With --as NAME (or BOARD_AGENT=NAME) you act as
-  another participant, e.g. a human posting from a terminal.
+  Inside Claude Code, the session tells the board who you are. Other agents set BOARD_SESSION
+  to an id that stays the same for their whole session (the first command registers them),
+  or BOARD_AGENT=NAME once they have a name. `board whoami` shows your name, and
+  `board rename NEW-NAME` changes it. --as NAME acts as another agent; acting as a human
+  needs the human passphrase.
 
 ADMIN
   board conventions               the shared working agreements (an editable node)
-  board config [KEY [VALUE]]      settings: enforce warn|block|off, claim_minutes, ...
+  board config [KEY [VALUE]]      settings: enforce warn|block|off, claim_minutes, ... (humans change them)
   board doctor                    check the installation
   board install / uninstall       add or remove the Claude Code hooks and the `board` command
   The data lives in ~/.message-board/board.db (override with MESSAGE_BOARD_HOME).

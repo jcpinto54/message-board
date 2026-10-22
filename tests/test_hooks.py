@@ -49,7 +49,7 @@ class HookTest(BoardTestCase):
 
     def test_block_mode_keeps_denying(self):
         self.ok("claim", "src/**", session="A")
-        self.ok("config", "enforce", "block", session="A")
+        self.ok("config", "enforce", "block", session=None)
         self.assertIsNotNone(self.edit("B", "src/x.py"))
         self.assertIsNotNone(self.edit("B", "src/x.py"))
         self.ok("release", session="A")
@@ -58,7 +58,7 @@ class HookTest(BoardTestCase):
 
     def test_enforce_off(self):
         self.ok("claim", "src/**", session="A")
-        self.ok("config", "enforce", "off", session="A")
+        self.ok("config", "enforce", "off", session=None)
         self.assertIsNone(self.edit("B", "src/x.py"))
 
     def test_risky_git_only_blocked_when_others_are_here(self):
@@ -97,6 +97,7 @@ class HookTest(BoardTestCase):
         self.assertIn("ping", self.ok("inbox", session="B"))  # still unread until read
 
     def test_sessions_running_before_install_get_the_briefing_once(self):
+        self.ok("status", "here too", session="B")
         first = self.bash("A", "ls", event="post-tool-use")
         self.assertIn("## Message board: you are @", context(first))
         self.assertIsNone(self.bash("A", "ls", event="post-tool-use"))
@@ -172,6 +173,7 @@ class SubprocessHookTest(BoardTestCase):
     """Runs the real entry point the way Claude Code does: python board.py hook <event>."""
 
     def test_entry_point_writes_ascii_json(self):
+        self.ok("status", "working here too", session="T")  # alone, the board would stay quiet
         env = {**os.environ, **self.env, "CLAUDE_CODE_SESSION_ID": "S"}
         payload = {"session_id": "S", "cwd": str(self.repo), "source": "startup"}
         proc = subprocess.run(

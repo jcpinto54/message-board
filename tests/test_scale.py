@@ -120,8 +120,9 @@ class BriefingTest(BoardTestCase):
     def test_long_conventions_are_clipped(self):
         c = self.con()
         me = model.ensure_agent(c, "ME", str(self.repo))
-        model.edit_node(c, me, model.node_by_key(c, "conventions"), body="rule\n" * 2000)
-        local, _, _ = model.post(c, me, model.get_node(c, me["home_id"]), title="Conventions", body="local rule")
+        human = model.ensure_agent(c, "human:t", str(self.repo), kind="human", name="t")
+        model.edit_node(c, human, model.node_by_key(c, "conventions"), body="rule\n" * 2000)
+        local, _, _ = model.post(c, human, model.get_node(c, me["home_id"]), title="Conventions", body="local rule")
         text = render.briefing(c, model.get_agent(c, me["id"]))
         self.assertIn("`board conventions` shows the rest", text)
         self.assertIn(f"Conventions for repo (#{local})", text)
@@ -169,7 +170,8 @@ class ChangesTest(BoardTestCase):
 
     def test_delivered_by_the_hooks_and_cleared_by_who(self):
         a = self.name_of("A")
-        self.hook("session-start", {"source": "startup"}, session="A")
+        self.ok("status", "starting", session="B")
+        self.hook("session-start", {"source": "startup"}, session="A")  # briefed: B works here too
         self.ok("status", "testing", session="B")
         result = self.hook("post-tool-use", {"tool_name": "Read", "tool_input": {}}, session="A")
         self.assertIn("Changes since you last looked", result["hookSpecificOutput"]["additionalContext"])

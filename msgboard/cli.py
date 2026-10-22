@@ -7,8 +7,10 @@ import getpass
 import locale
 import os
 import re
+import signal
 import sqlite3
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import IO, BinaryIO, Callable, Dict, List, Mapping, Optional, Sequence
@@ -32,6 +34,8 @@ class Context:
         out: Optional[IO[str]] = None,
         err: Optional[IO[str]] = None,
         as_name: Optional[str] = None,
+        interactive: Optional[bool] = None,
+        prompt: Optional[Callable[[str], str]] = None,
     ):
         self.env = dict(os.environ if env is None else env)
         self.cwd = cwd or os.getcwd()
@@ -39,10 +43,16 @@ class Context:
         self.out = out or sys.stdout
         self.err = err or sys.stderr
         self.as_name = as_name
+        # A person at a terminal. Agents' shells have no terminal on stdin, so they can't be asked.
+        if interactive is None:
+            interactive = stdin is None and _isatty(sys.stdin)
+        self.interactive = interactive
+        self.prompt = prompt or getpass.getpass
         self.home = db.board_home(self.env)
         self._command: Optional[str] = None
         self._con: Optional[sqlite3.Connection] = None
         self._me: Optional[Row] = None
+        self._viewer: Optional[Row] = None
 
     @property
     def command(self) -> str:
@@ -66,19 +76,28 @@ class Context:
         self.out.write(text + "\n")
 
     def me(self) -> Row:
+        """Who is acting. A human proves it with the passphrase."""
         if self._me is None:
-            self._me = self._identify()
+            self._me = self._identify(verify=True)
         return self._me
 
-    def _identify(self) -> Row:
+    def viewer(self) -> Row:
+        """Who is reading. Reading needs no passphrase."""
+        if self._me is not None:
+            return self._me
+        if self._viewer is None:
+            self._viewer = self._identify(verify=False)
+        return self._viewer
+
+    def _identify(self, verify: bool) -> Row:
         name = self.as_name or self.env.get("BOARD_AGENT")
         if name:
             row = model.agent_by_name(self.con, name)
             if row is None:
                 raise BoardError(f"Nobody is called @{name.lstrip('@')}. `board who --all` lists everyone.")
-            return model.ensure_agent(
-                self.con, row["session_id"], self.cwd, kind=row["kind"], follow_cwd=row["kind"] == "human"
-            )
+            if row["kind"] == "human":
+                return self._human(row["name"], verify, row["session_id"])
+            return model.ensure_agent(self.con, row["session_id"], self.cwd, kind=row["kind"])
         session = self.env.get("CLAUDE_CODE_SESSION_ID")
         if session:
             return model.ensure_agent(self.con, session, self.cwd)
@@ -90,17 +109,74 @@ class Context:
                 "Can't tell which agent you are: CLAUDE_CODE_SESSION_ID isn't set. "
                 "Pass --as <your-name> (`board who` lists names)."
             )
+        if not self.interactive:
+            raise BoardError(
+                "Can't tell who you are. An agent: set BOARD_SESSION to an id that stays the same for your "
+                "whole session (e.g. `export BOARD_SESSION=codex-<something unique>`), or BOARD_AGENT to your "
+                "board name. A human: run this in a terminal, or use the GUI (`board serve`)."
+            )
         user = self.env.get("USERNAME") or self.env.get("USER") or getpass.getuser() or "human"
-        return model.ensure_agent(
-            self.con, f"human:{model.clean_name(user)}", self.cwd, kind="human", name=user, follow_cwd=True
-        )
+        return self._human(user, verify)
+
+    def _human(self, name: str, verify: bool, session: Optional[str] = None) -> Row:
+        session = session or f"human:{model.clean_name(name) or 'human'}"
+        if not verify:
+            row = model.agent_by_session(self.con, session)
+            if row is not None:
+                return row  # reading doesn't count as the human being around
+        else:
+            self._check_passphrase(name)
+        return model.ensure_agent(self.con, session, self.cwd, kind="human", name=name, follow_cwd=True)
+
+    def _ask(self, text: str) -> str:
+        try:
+            return self.prompt(text)
+        except (EOFError, KeyboardInterrupt):
+            raise BoardError("Cancelled.") from None
+
+    def _check_passphrase(self, name: str) -> None:
+        from . import auth
+
+        if not self.interactive:
+            raise BoardError(
+                "Acting as a human needs the board passphrase, typed in a terminal (or use the GUI: `board serve`). "
+                "Agents can't act as humans."
+            )
+        if not auth.is_set(self.home):
+            self.err.write(
+                "No board passphrase yet. Choose one: it's how the board tells you from the agents, so keep it "
+                "out of files and environment variables they can read.\n"
+            )
+            self.set_passphrase(name)
+            return
+        if not auth.verify(self.home, self._ask("Board passphrase: ")):
+            raise BoardError(
+                f"Wrong passphrase. If you've lost it, delete {auth.path(self.home)} and the board will ask for a new one."
+            )
+        auth.check_unchanged(self.con, self.home)
+
+    def set_passphrase(self, name: str, changed: bool = False) -> None:
+        from . import auth
+
+        first = self._ask("New board passphrase: ")
+        if self._ask("Repeat it: ") != first:
+            raise BoardError("The passphrases don't match; nothing was changed.")
+        auth.set_passphrase(self.home, first)
+        auth.record_new(self.con, self.home, name, changed=changed)
 
     def resolve(self, ref: Optional[str]) -> Optional[Row]:
         if ref is None:
             return None
         if ref.strip().lower() == "conventions":
             return model.node_by_key(self.con, "conventions")
-        return model.resolve(self.con, ref, self.me()["home_id"])
+        return model.resolve(self.con, ref, self.viewer()["home_id"])
+
+
+def _isatty(stream: object) -> bool:
+    try:
+        return bool(stream.isatty())  # type: ignore[attr-defined]
+    except (AttributeError, ValueError):
+        return False
 
 
 def decode(data: bytes) -> str:
@@ -145,7 +221,7 @@ def _special_resource(spec: str, cwd: str) -> str:
 
 
 def cmd_brief(ctx: Context, args: argparse.Namespace) -> int:
-    ctx.say(render.briefing(ctx.con, ctx.me(), ctx.command))
+    ctx.say(render.briefing(ctx.con, ctx.viewer(), ctx.command))
     return 0
 
 
@@ -160,7 +236,7 @@ def cmd_help(ctx: Context, args: argparse.Namespace) -> int:
 
 
 def cmd_whoami(ctx: Context, args: argparse.Namespace) -> int:
-    me = ctx.me()
+    me = ctx.viewer()
     con = ctx.con
     home = model.get_node(con, me["home_id"]) if me["home_id"] else None
     ctx.say(f"You are @{me['name']} ({me['kind']}).")
@@ -195,7 +271,7 @@ def cmd_status(ctx: Context, args: argparse.Namespace) -> int:
 
 
 def cmd_who(ctx: Context, args: argparse.Namespace) -> int:
-    me = ctx.me()
+    me = ctx.viewer()
     for line in render.who(ctx.con, me, include_gone=args.all):
         ctx.say(line)
     model.mark_events_seen(ctx.con, me["id"])  # they've just seen the current state
@@ -210,7 +286,7 @@ def cmd_tree(ctx: Context, args: argparse.Namespace) -> int:
         root,
         depth,
         include_archived=args.all,
-        home_id=ctx.me()["home_id"],
+        home_id=ctx.viewer()["home_id"],
         child_limit=None if args.all else render.TREE_CHILD_LIMIT,
     )
     for line in lines:
@@ -225,7 +301,7 @@ def cmd_read(ctx: Context, args: argparse.Namespace) -> int:
     lines, shown = render.read(ctx.con, node, depth=args.depth, show_all=args.all)
     for line in lines:
         ctx.say(line)
-    model.mark_read(ctx.con, ctx.me()["id"], shown)
+    model.mark_read(ctx.con, ctx.viewer()["id"], shown)
     return 0
 
 
@@ -270,6 +346,9 @@ def _report_post(ctx: Context, node_id: int, notified: List[str], unknown: List[
         ctx.say("Notified: " + ", ".join(f"@{n}" for n in notified) + ".")
     if unknown:
         ctx.say("Note: nobody is called " + ", ".join(f"@{n}" for n in unknown) + " (`board who --all`).")
+    if notified and model.mentioned_names(node["title"], node["body"]):
+        thread = model.conversation_root(ctx.con, node)["id"]
+        ctx.say(f"Need their answer? `{ctx.command} wait {thread}` waits for it (in the background, if you can carry on).")
 
 
 def cmd_post(ctx: Context, args: argparse.Namespace) -> int:
@@ -326,7 +405,7 @@ def cmd_sub(ctx: Context, args: argparse.Namespace) -> int:
     node = ctx.resolve(args.node)
     if node is None:
         raise BoardError("Subscribe to a node, not the whole board.")
-    me = ctx.me()
+    me = ctx.viewer()
     if args.cmd == "unsub":
         removed = model.unsubscribe(ctx.con, me["id"], node["id"])
         ctx.say(f"Unsubscribed from #{node['id']}." if removed else f"You weren't subscribed to #{node['id']}.")
@@ -342,7 +421,7 @@ def cmd_sub(ctx: Context, args: argparse.Namespace) -> int:
 
 
 def cmd_inbox(ctx: Context, args: argparse.Namespace) -> int:
-    me = ctx.me()
+    me = ctx.viewer()
     rows = model.inbox(ctx.con, me["id"], include_read=args.all, limit=args.limit)
     if not rows:
         ctx.say("Nothing new." if not args.all else "No notifications yet.")
@@ -356,7 +435,7 @@ def cmd_inbox(ctx: Context, args: argparse.Namespace) -> int:
 
 
 def cmd_seen(ctx: Context, args: argparse.Namespace) -> int:
-    me = ctx.me()
+    me = ctx.viewer()
     if not args.nodes or [n.lower() for n in args.nodes] == ["all"]:
         count = model.mark_all_read(ctx.con, me["id"])
     else:
@@ -368,6 +447,99 @@ def cmd_seen(ctx: Context, args: argparse.Namespace) -> int:
         count = model.mark_read(ctx.con, me["id"], ids)
     ctx.say(f"Marked {render.plural(count, 'notification')} as read.")
     return 0
+
+
+WAIT_POLL_S = 1.0
+WAIT_HEARTBEAT_S = 20.0  # under model.WAIT_FRESH_S
+
+
+def cmd_wait(ctx: Context, args: argparse.Namespace) -> int:
+    """Block until a reply in a thread, the release of a claimed area, or (without a target)
+    anything addressed to me arrives; then print it."""
+    me = ctx.viewer()
+    con = ctx.con
+    timeout = parse_duration(args.timeout)
+    start = time.time()
+    target = (args.target or "").strip()
+    check: Callable[[], Optional[List[str]]]
+    if not target:
+        what = f"messages for @{me['name']}"
+        after = model.last_notification_id(con, me["id"])
+
+        def check() -> Optional[List[str]]:
+            rows = model.addressed_to(con, me["id"], after, render.BACKGROUND_REASONS)
+            if not rows:
+                return None
+            model.mark_delivered(con, [r["id"] for r in rows])
+            model.mark_read(con, me["id"], [r["node_id"] for r in rows if r["node_id"] is not None])
+            return render.arrivals(con, rows)
+
+    elif re.fullmatch(r"#?\d+", target):
+        node = ctx.resolve(target)
+        what = f"#{node['id']}"
+
+        def check() -> Optional[List[str]]:
+            rows = model.new_replies(con, node, me["id"], start)
+            if not rows:
+                return None
+            model.mark_read(con, me["id"], [r["id"] for r in rows])
+            names = render.Names(con)
+            return [line for r in rows for line in render.post_in_full(con, r, names)]
+
+    else:
+        res = parse_resource(_special_resource(target, ctx.cwd), ctx.cwd)
+        shown = relative_to(res.text, me["worktree"]) if res.is_path else res.text
+        what = f"{shown} to be free"
+
+        def check() -> Optional[List[str]]:
+            if model.conflicting_claims(con, res, me["id"]):
+                return None
+            return [f"Nobody else holds a claim on {shown} now. Claim it before you start: `{ctx.command} claim {shown}`."]
+
+    deadline = start + timeout
+    stop = _stop_on_sigterm()
+    model.set_waiting(con, me["id"], what, deadline)
+    beat = start
+    try:
+        while True:
+            found = check()
+            if found:
+                for line in found:
+                    ctx.say(line)
+                return 0
+            t = time.time()
+            if t >= deadline:
+                again = f"{ctx.command} wait {target}".rstrip()
+                ctx.say(f"Nothing yet after {_duration(timeout)}: still waiting on {what}. Run `{again}` again to keep waiting, or carry on.")
+                return 0
+            if t - beat >= WAIT_HEARTBEAT_S:
+                model.heartbeat(con, me["id"])
+                beat = t
+            time.sleep(min(WAIT_POLL_S, deadline - t))
+    except KeyboardInterrupt:
+        ctx.say(f"Stopped waiting on {what}.")
+        return 0
+    finally:
+        model.set_waiting(con, me["id"], None, None)
+        stop()
+
+
+def _stop_on_sigterm() -> Callable[[], None]:
+    """Treat SIGTERM like Ctrl+C while waiting, so the wait is cleaned up. Returns the undo."""
+    if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "SIGTERM"):
+        return lambda: None
+
+    def interrupt(signum, frame):  # noqa: ARG001
+        raise KeyboardInterrupt
+
+    previous = signal.signal(signal.SIGTERM, interrupt)
+    return lambda: signal.signal(signal.SIGTERM, previous)
+
+
+def _duration(seconds: float) -> str:
+    if seconds < 120:
+        return f"{seconds:g}s"
+    return f"{seconds / 60:g}m" if seconds < 7200 else f"{seconds / 3600:g}h"
 
 
 def cmd_claim(ctx: Context, args: argparse.Namespace) -> int:
@@ -390,6 +562,12 @@ def cmd_claim(ctx: Context, args: argparse.Namespace) -> int:
     minutes = args.minutes or db.config_number(ctx.con, "claim_minutes")
     shown = ", ".join(relative_to(r.text, me["worktree"]) if r.is_path else r.text for r in resources)
     ctx.say(f"Claimed {shown}. It stays yours while you're active and expires {minutes:g} minutes after your last activity.")
+    elsewhere = {c["id"]: c for r in resources for c in model.claims_overlapping_other_worktrees(ctx.con, r, me["id"])}
+    if elsewhere:
+        ctx.say("Heads-up: in other worktrees of this repository, the same area is claimed:")
+        for c in elsewhere.values():
+            ctx.say(f"  @{c['agent_name']}: {render.claim_text(c, c['agent_worktree'])} in {c['agent_worktree']}")
+        ctx.say("You won't touch each other's files, but expect merge conflicts. Coordinate on the board if it matters.")
     return 0
 
 
@@ -423,7 +601,7 @@ def cmd_release(ctx: Context, args: argparse.Namespace) -> int:
 
 
 def cmd_claims(ctx: Context, args: argparse.Namespace) -> int:
-    me = ctx.me()
+    me = ctx.viewer()
     rows = model.active_claims(ctx.con, agent_id=me["id"] if args.mine else None)
     if not args.all and not args.mine:
         local = {a["id"] for a in model.list_agents(ctx.con, include_gone=True) if a["home_id"] == me["home_id"]}
@@ -453,8 +631,11 @@ def cmd_conventions(ctx: Context, args: argparse.Namespace) -> int:
     for line in lines:
         ctx.say(line)
     ctx.say("")
-    ctx.say("Improve them with `board edit conventions --body ...` (or --file) and post why as a reply.")
-    model.mark_read(ctx.con, ctx.me()["id"], shown)
+    if ctx.viewer()["kind"] == "human":
+        ctx.say("Change them with `board edit conventions --body ...` (or --file). Only humans can.")
+    else:
+        ctx.say("Only humans can change them. If you think one should change, @mention a human.")
+    model.mark_read(ctx.con, ctx.viewer()["id"], shown)
     return 0
 
 
@@ -499,8 +680,25 @@ def cmd_events(ctx: Context, args: argparse.Namespace) -> int:
 def cmd_serve(ctx: Context, args: argparse.Namespace) -> int:
     from . import server
 
+    if ctx.me()["kind"] != "human":  # the GUI acts with human authority, so prove it first
+        raise BoardError("Only a human can run the GUI: it acts with human authority. Agents use the CLI.")
     user = ctx.env.get("USERNAME") or ctx.env.get("USER") or getpass.getuser() or "human"
     return server.serve(ctx.home, user, ctx.cwd, args.port, not args.no_open, ctx.out)
+
+
+def cmd_passphrase(ctx: Context, args: argparse.Namespace) -> int:
+    from . import auth
+
+    existed = auth.is_set(ctx.home)
+    me = ctx.me()  # asks for the current passphrase, or for a first one
+    if me["kind"] != "human":
+        raise BoardError("Only humans have a passphrase.")
+    if not existed:
+        ctx.say("Passphrase set.")
+        return 0
+    ctx.set_passphrase(me["name"], changed=True)
+    ctx.say("Passphrase changed.")
+    return 0
 
 
 def cmd_doctor(ctx: Context, args: argparse.Namespace) -> int:
@@ -523,7 +721,7 @@ def cmd_doctor(ctx: Context, args: argparse.Namespace) -> int:
         ctx.say(line)
         ok = ok and "PROBLEM" not in line
     try:
-        me = ctx.me()
+        me = ctx.viewer()
         ctx.say(f"you are @{me['name']} ({me['kind']})")
     except BoardError as e:
         ctx.say(f"identity: {e}")
@@ -533,9 +731,20 @@ def cmd_doctor(ctx: Context, args: argparse.Namespace) -> int:
 def cmd_install(ctx: Context, args: argparse.Namespace) -> int:
     from . import install
 
+    from . import auth
+
     settings = Path(args.settings).expanduser() if args.settings else install.default_settings_path()
-    for line in install.install(settings, dry_run=args.dry_run, command=not args.no_command):
+    for line in install.install(settings, ctx.home, dry_run=args.dry_run, command=not args.no_command):
         ctx.say(line)
+    if not args.dry_run and not auth.is_set(ctx.home):
+        agent = any(ctx.env.get(k) for k in ("CLAUDE_CODE_SESSION_ID", "BOARD_SESSION", "BOARD_AGENT", "CLAUDECODE"))
+        if ctx.interactive and not agent:
+            ctx.say("Now choose the human passphrase. You'll type it for human actions: pausing agents,")
+            ctx.say("releasing their claims, posting as yourself, opening the GUI.")
+            ctx.me()
+            ctx.say("Passphrase set.")
+        else:
+            ctx.say("Next, in a terminal: `board passphrase` sets the human passphrase.")
     return 0
 
 
@@ -543,7 +752,7 @@ def cmd_uninstall(ctx: Context, args: argparse.Namespace) -> int:
     from . import install
 
     settings = Path(args.settings).expanduser() if args.settings else install.default_settings_path()
-    for line in install.uninstall(settings, command=not args.keep_command):
+    for line in install.uninstall(settings, ctx.home, command=not args.keep_command):
         ctx.say(line)
     return 0
 
@@ -578,6 +787,7 @@ HANDLERS: Dict[str, Callable[[Context, argparse.Namespace], int]] = {
     "claim": cmd_claim,
     "release": cmd_release,
     "claims": cmd_claims,
+    "wait": cmd_wait,
     "search": cmd_search,
     "conventions": cmd_conventions,
     "config": cmd_config,
@@ -585,6 +795,7 @@ HANDLERS: Dict[str, Callable[[Context, argparse.Namespace], int]] = {
     "resume": cmd_pause,
     "events": cmd_events,
     "serve": cmd_serve,
+    "passphrase": cmd_passphrase,
     "doctor": cmd_doctor,
     "install": cmd_install,
     "uninstall": cmd_uninstall,
@@ -681,6 +892,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("resources", nargs="*")
     p.add_argument("--all", action="store_true")
     p.add_argument("--of", metavar="NAME", help="(humans) release another participant's claims")
+    p = add("wait", "wait for a reply in a thread, a claimed area to be free, or (no target) anything for you")
+    p.add_argument("target", nargs="?", help="a thread (#12), or a path/glob/resource someone else has claimed")
+    p.add_argument("--timeout", default="90s", help="how long to wait (default 90s; e.g. 10m, 1h)")
     p = add("claims", "list active claims (in your repo by default)")
     p.add_argument("--all", action="store_true", help="everywhere")
     p.add_argument("--mine", action="store_true")
@@ -701,6 +915,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("serve", "open the web GUI to watch the board and intervene")
     p.add_argument("--port", type=int, default=8765, help="first port to try (0 = any free port)")
     p.add_argument("--no-open", action="store_true", help="don't open a browser")
+    add("passphrase", "(humans) set or change the human passphrase")
     add("doctor", "check the installation")
     p = add("install", "add the Claude Code hooks (and the `board` command)")
     p.add_argument("--settings", help="settings.json to edit (default ~/.claude/settings.json)")
@@ -730,13 +945,15 @@ def main(
     stdin: Optional[BinaryIO] = None,
     stdout: Optional[IO[str]] = None,
     stderr: Optional[IO[str]] = None,
+    interactive: Optional[bool] = None,
+    prompt: Optional[Callable[[str], str]] = None,
 ) -> int:
     out = stdout or _utf8(sys.stdout)
     err = stderr or _utf8(sys.stderr)
     args = build_parser().parse_args(argv)
     if getattr(args, "home", None):
         env = dict(os.environ if env is None else env, MESSAGE_BOARD_HOME=os.path.abspath(args.home))
-    ctx = Context(env, cwd, stdin, out, err, getattr(args, "as_name", None))
+    ctx = Context(env, cwd, stdin, out, err, getattr(args, "as_name", None), interactive, prompt)
     try:
         return HANDLERS[args.cmd or "brief"](ctx, args) or 0
     except BoardError as e:

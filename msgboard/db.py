@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 from typing import Iterator, Mapping, Optional
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 DEFAULTS = {
     "enforce": "warn",
@@ -142,7 +142,20 @@ CREATE INDEX notifications_pending ON notifications(agent_id) WHERE delivered_at
 CREATE INDEX notifications_created ON notifications(created_at)
 """
 
-MIGRATIONS = {1: SCHEMA_V1, 2: SCHEMA_V2, 3: SCHEMA_V3}
+# Claims remember the checkout (worktree) and repository they were made in, so agents in other
+# worktrees of the same repository can be told about them.
+SCHEMA_V4 = """
+ALTER TABLE claims ADD COLUMN root_key TEXT;
+ALTER TABLE claims ADD COLUMN repo_key TEXT
+"""
+
+# What an agent is blocked on (`board wait`), and until when.
+SCHEMA_V5 = """
+ALTER TABLE agents ADD COLUMN waiting TEXT;
+ALTER TABLE agents ADD COLUMN waiting_until REAL
+"""
+
+MIGRATIONS = {1: SCHEMA_V1, 2: SCHEMA_V2, 3: SCHEMA_V3, 4: SCHEMA_V4, 5: SCHEMA_V5}
 
 
 def board_home(env: Optional[Mapping[str, str]] = None) -> str:

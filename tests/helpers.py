@@ -5,9 +5,12 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
-from msgboard import cli, db
+from msgboard import auth, cli, db
+
+PASSPHRASE = "correct horse battery"
+auth.ITERATIONS = 1000  # keep the tests fast; real passphrases use many more
 
 
 class BoardTestCase(unittest.TestCase):
@@ -43,12 +46,28 @@ class BoardTestCase(unittest.TestCase):
         cwd: Optional[Path] = None,
         stdin: bytes = b"",
         env: Optional[Dict[str, str]] = None,
+        interactive: Optional[bool] = None,
+        typed: Union[None, str, List[str]] = PASSPHRASE,
     ) -> Tuple[int, str, str]:
+        """Run the CLI as an agent session, or (session=None) as a human at a terminal who types
+        `typed` whenever asked for the passphrase (or each answer of a list, in turn)."""
         e = dict(self.env)
         if session is not None:
             e["CLAUDECODE"] = "1"
             e["CLAUDE_CODE_SESSION_ID"] = session
         e.update(env or {})
+        if interactive is None:
+            interactive = session is None
+        self.prompts = []
+
+        answers = list(typed) if isinstance(typed, list) else None
+
+        def prompt(text: str) -> str:
+            self.prompts.append(text)
+            if typed is None:
+                raise AssertionError(f"unexpected passphrase prompt: {text}")
+            return answers.pop(0) if answers is not None else typed
+
         out, err = io.StringIO(), io.StringIO()
         code = cli.main(
             list(args),
@@ -57,6 +76,8 @@ class BoardTestCase(unittest.TestCase):
             stdin=io.BytesIO(stdin),
             stdout=out,
             stderr=err,
+            interactive=interactive,
+            prompt=prompt,
         )
         return code, out.getvalue(), err.getvalue()
 
@@ -77,6 +98,16 @@ class BoardTestCase(unittest.TestCase):
     def _hook_errors(self) -> str:
         path = self.home / "hook-errors.log"
         return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def linked_worktree(self, name: str = "feature") -> Path:
+        """A second checkout of the test repository, the way `git worktree add` makes one."""
+        gitdir = self.repo / ".git" / "worktrees" / name
+        gitdir.mkdir(parents=True)
+        (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+        wt = self.tmp / name
+        (wt / "src").mkdir(parents=True)
+        (wt / ".git").write_text(f"gitdir: {gitdir.as_posix()}\n", encoding="utf-8")
+        return wt
 
     def name_of(self, session: str) -> str:
         out = self.ok("whoami", session=session)

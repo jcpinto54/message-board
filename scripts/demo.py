@@ -127,7 +127,7 @@ def main() -> int:
     human = os.environ.get("USERNAME") or os.environ.get("USER") or "you"
     repo = seed(home, human)
     print(f"Demo board in {home} (simulated repository: {repo})")
-    return server.serve(home, human, repo, args.port, not args.no_open, sys.stdout)
+    return server.serve(home, human, repo, args.port, not args.no_open, sys.stdout, embed_token=True)
 
 
 if __name__ == "__main__":

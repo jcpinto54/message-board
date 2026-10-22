@@ -93,11 +93,15 @@ class ConversationTest(BoardTestCase):
         self.assertNotIn("CI", self.ok("tree", session="A"))
         self.assertIn("CI", self.ok("tree", "--all", session="A"))
 
-    def test_conventions_are_shown_and_editable(self):
+    def test_conventions_are_shown_and_only_humans_change_them(self):
         out = self.ok(session="A")
         self.assertIn("Board conventions", out)
         self.name_of("B")
-        self.ok("edit", "conventions", "--body", "1. Be kind.", session="A")
+        code, _, err = self.run_cli("edit", "conventions", "--body", "1. Anything goes.", session="A")
+        self.assertEqual(code, 1)
+        self.assertIn("Only humans can change the board conventions", err)
+        self.assertIn("@mention a human", self.ok("conventions", session="A"))
+        self.ok("edit", "conventions", "--body", "1. Be kind.", session=None)
         self.assertIn("updated the board conventions", self.ok("inbox", session="B"))
         self.assertIn("1. Be kind.", self.ok("conventions", session="B"))
         self.assertIn("Nothing new", self.ok("inbox", session="B"))
@@ -149,9 +153,12 @@ class ClaimTest(BoardTestCase):
         self.assertIn("No active claims", self.ok("claims", session="A"))
 
     def test_config(self):
-        self.ok("config", "enforce", "block", session="A")
+        code, _, err = self.run_cli("config", "enforce", "off", session="A")
+        self.assertEqual(code, 1)
+        self.assertIn("Only humans", err)
+        self.ok("config", "enforce", "block", session=None)
         self.assertIn("enforce = block", self.ok("config", session="A"))
-        code, _, err = self.run_cli("config", "enforce", "maybe", session="A")
+        code, _, err = self.run_cli("config", "enforce", "maybe", session=None)
         self.assertEqual(code, 1)
 
 

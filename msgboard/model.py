@@ -9,7 +9,7 @@ import time
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import db
-from .workspace import Resource, Workspace, locate, overlaps, path_key, path_matches, relative_to
+from .workspace import Resource, Workspace, checkout_of, locate, overlaps, path_key, path_matches, relative_to
 
 Row = sqlite3.Row
 
@@ -233,9 +233,86 @@ def active_in_worktree(con: sqlite3.Connection, worktree_key: str, exclude_id: i
     return [r for r in rows if activity(r, active_s, gone_s) == "active"]
 
 
-def mark_briefed(con: sqlite3.Connection, agent: Row) -> None:
+def active_in_space(con: sqlite3.Connection, me: Row) -> List[Row]:
+    """Other agents (not humans) active in my repository, in any of its worktrees."""
+    if me["home_id"] is None:
+        return []
+    active_s, _ = thresholds(con)
+    return con.execute(
+        "SELECT * FROM agents WHERE home_id = ? AND id != ? AND kind != 'human' AND ended_at IS NULL"
+        " AND last_seen >= ? ORDER BY last_seen DESC",
+        (me["home_id"], me["id"], now() - active_s),
+    ).fetchall()
+
+
+# ---------------------------------------------------------------- waiting (`board wait`)
+
+WAIT_FRESH_S = 60  # a waiting agent beats more often than this; a killed wait goes stale on its own
+
+
+def heartbeat(con: sqlite3.Connection, agent_id: int) -> None:
+    """Count a waiting agent as active, and keep its claims."""
+    t = now()
     with db.tx(con):
-        con.execute("UPDATE agents SET briefed_at = ? WHERE id = ?", (now(), agent["id"]))
+        con.execute("UPDATE agents SET last_seen = ? WHERE id = ?", (t, agent_id))
+        _renew_claims(con, agent_id, t)
+
+
+def set_waiting(con: sqlite3.Connection, agent_id: int, what: Optional[str], until: Optional[float]) -> None:
+    with db.tx(con):
+        con.execute("UPDATE agents SET waiting = ?, waiting_until = ? WHERE id = ?", (what, until, agent_id))
+
+
+def waiting_on(agent: Row, t: Optional[float] = None) -> Optional[str]:
+    """What the agent is waiting for right now, if anything."""
+    t = t or now()
+    if agent["waiting"] and (agent["waiting_until"] or 0) > t and t - agent["last_seen"] < WAIT_FRESH_S:
+        return agent["waiting"]
+    return None
+
+
+def conversation_root(con: sqlite3.Connection, node: Row) -> Row:
+    """The thread a post belongs to: its topmost ancestor that isn't a space or a group."""
+    for ancestor_id in ancestor_ids(node["lineage"]):
+        a = get_node(con, ancestor_id)
+        if a["key"] is None and a["kind"] not in CONTAINER_KINDS:
+            return a
+    return node
+
+
+def new_replies(con: sqlite3.Connection, node: Row, me_id: int, since: float) -> List[Row]:
+    """Posts by others in a conversation that I haven't answered yet: newer than my own latest post
+    there, or than `since` if I haven't posted in it."""
+    where, params = subtree_sql(node["lineage"], include_self=True)
+    mine = con.execute(
+        f"SELECT MAX(created_at) FROM nodes WHERE {where} AND author_id = ?", (*params, me_id)
+    ).fetchone()[0]
+    below, below_params = subtree_sql(node["lineage"])
+    return con.execute(
+        f"SELECT * FROM nodes WHERE {below} AND author_id IS NOT NULL AND author_id != ? AND hidden = 0"
+        " AND created_at > ? ORDER BY created_at, id",
+        (*below_params, me_id, mine if mine is not None else since),
+    ).fetchall()
+
+
+def addressed_to(con: sqlite3.Connection, me_id: int, after_id: int, skip: Sequence[str]) -> List[Row]:
+    """Notifications for me that are new (after notification `after_id`) or still undelivered,
+    leaving out the background reasons in `skip`."""
+    return con.execute(
+        _NOTIFICATION_SELECT + f" WHERE n.agent_id = ? AND n.read_at IS NULL AND (n.id > ? OR n.delivered_at IS NULL)"
+        f" AND n.reason NOT IN ({_in(skip)}) ORDER BY n.id",
+        (me_id, after_id, *skip),
+    ).fetchall()
+
+
+def last_notification_id(con: sqlite3.Connection, me_id: int) -> int:
+    return con.execute("SELECT COALESCE(MAX(id), 0) FROM notifications WHERE agent_id = ?", (me_id,)).fetchone()[0]
+
+
+def mark_briefed(con: sqlite3.Connection, agent: Row, briefed: bool = True) -> None:
+    """Record that the agent has (or, with briefed=False, no longer has) the briefing in its context."""
+    with db.tx(con):
+        con.execute("UPDATE agents SET briefed_at = ? WHERE id = ?", (now() if briefed else None, agent["id"]))
 
 
 def set_status(con: sqlite3.Connection, agent: Row, text: Optional[str]) -> None:
@@ -332,14 +409,6 @@ def subtree_sql(lineage: str, column: str = "lineage", include_self: bool = Fals
     """WHERE fragment (and parameters) selecting the nodes below a lineage."""
     low = ">=" if include_self else ">"
     return f"{column} {low} ? AND {column} < ?", (lineage, upper(lineage))
-
-
-def child_titled(con: sqlite3.Connection, parent_id: int, title: str) -> Optional[Row]:
-    return con.execute(
-        "SELECT * FROM nodes WHERE parent_id = ? AND lower(title) = lower(?) AND archived = 0"
-        " ORDER BY created_at LIMIT 1",
-        (parent_id, title),
-    ).fetchone()
 
 
 def ancestor_ids(lineage: str) -> List[int]:
@@ -461,6 +530,37 @@ def ensure_space(con: sqlite3.Connection, ws: Workspace) -> int:
     return node_id
 
 
+def space_of(con: sqlite3.Connection, node: Row) -> Optional[int]:
+    """The repository (or folder) space a node lives in, if any."""
+    ids = ancestor_ids(node["lineage"]) if node["lineage"] else []
+    top = get_node(con, ids[0]) if ids else node
+    key = top["key"] or ""
+    return top["id"] if key.startswith(("repo:", "dir:")) else None
+
+
+def repo_conventions(con: sqlite3.Connection, space_id: int) -> Optional[Row]:
+    """A repository's own conventions: a post titled "conventions" in its space, written by a human."""
+    return con.execute(
+        "SELECT n.* FROM nodes n JOIN agents a ON a.id = n.author_id WHERE n.parent_id = ?"
+        " AND lower(n.title) = 'conventions' AND n.archived = 0 AND a.kind = 'human'"
+        " ORDER BY n.created_at LIMIT 1",
+        (space_id,),
+    ).fetchone()
+
+
+def _check_may_change(con: sqlite3.Connection, by: Optional[Row], node: Row) -> None:
+    """Agents can't change the conventions or what a human wrote."""
+    if by is None or by["kind"] == "human":
+        return
+    if node["key"] == "conventions":
+        raise BoardError(
+            "Only humans can change the board conventions. If you think one should change, @mention a human."
+        )
+    author = get_agent(con, node["author_id"]) if node["author_id"] is not None else None
+    if author is not None and author["kind"] == "human":
+        raise BoardError(f"#{node['id']} was written by a human (@{author['name']}); only humans can change it. Reply instead.")
+
+
 def clean_kind(kind: str) -> str:
     k = re.sub(r"[^a-z0-9_-]+", "-", kind.strip().lower()).strip("-")
     if not k:
@@ -514,9 +614,15 @@ def _fan_out(con: sqlite3.Connection, node_id: int) -> Tuple[List[str], List[str
 
     reasons: Dict[int, str] = {}
     unknown: List[str] = []
+    space = space_of(con, node)
     for name in mentioned_names(node["title"], node["body"]):
         if name in BROADCAST_NAMES:
-            for a in con.execute("SELECT * FROM agents"):
+            # @all means everyone in this repository's space; outside any space, everyone.
+            if space is not None:
+                everyone = con.execute("SELECT * FROM agents WHERE home_id = ?", (space,))
+            else:
+                everyone = con.execute("SELECT * FROM agents")
+            for a in everyone:
                 if a["id"] != author and alive(a):
                     reasons.setdefault(a["id"], "mention")
             continue
@@ -580,6 +686,7 @@ def edit_node(
         values.append(value)
     if not sets:
         raise BoardError("Nothing to change: use --title, --body/--file, --kind or --status.")
+    _check_may_change(con, editor, node)
     t = now()
     with db.tx(con):
         con.execute(
@@ -615,6 +722,7 @@ def move_node(con: sqlite3.Connection, node: Row, new_parent: Optional[Row], by:
     new_parent_id = new_parent["id"] if new_parent is not None else None
     if new_parent is not None and new_parent["lineage"].startswith(node["lineage"]):
         raise BoardError("Can't move a node inside itself.")
+    _check_may_change(con, by, node)
     t = now()
     with db.tx(con):
         node = get_node(con, node["id"])
@@ -638,6 +746,7 @@ def move_node(con: sqlite3.Connection, node: Row, new_parent: Optional[Row], by:
 
 
 def set_archived(con: sqlite3.Connection, node: Row, archived: bool, by: Optional[Row] = None) -> None:
+    _check_may_change(con, by, node)
     with db.tx(con):
         con.execute(
             "UPDATE nodes SET archived = ?, rev = ? WHERE id = ?", (int(archived), _next_rev(con), node["id"])
@@ -917,6 +1026,47 @@ def claims_covering(con: sqlite3.Connection, key: str, exclude_agent: int) -> Li
     ]
 
 
+def _in_other_worktrees(con: sqlite3.Connection, key: str, exclude_agent: int, hard_only: bool):
+    """(claim, its pattern relative to its checkout, `key` relative to its checkout) for path claims
+    made in the other worktrees of the repository that `key` lies in."""
+    ws = checkout_of(key)
+    root_key = path_key(ws.root)
+    if not ws.is_git or not key.startswith(root_key + "/"):
+        return []
+    relative = key[len(root_key) + 1 :]
+    rows = con.execute(
+        _CLAIM_SELECT + " AND c.agent_id != ? AND c.is_path = 1 AND c.repo_key = ? AND c.root_key != ?"
+        + (" AND c.soft = 0" if hard_only else "")
+        + " ORDER BY c.soft, c.created_at",
+        (now(), exclude_agent, ws.key, root_key),
+    ).fetchall()
+    found = []
+    for c in rows:
+        prefix = c["root_key"] + "/"
+        if c["match_key"] == c["root_key"]:
+            found.append((c, "", relative))
+        elif c["match_key"].startswith(prefix):
+            found.append((c, c["match_key"][len(prefix) :], relative))
+    return found
+
+
+def claims_in_other_worktrees(con: sqlite3.Connection, key: str, exclude_agent: int) -> List[Row]:
+    """Claims and recent-edit markers covering the same file in other worktrees of its repository.
+    They can't clash with this copy of the file, only when the branches are merged."""
+    return [c for c, pattern, rel in _in_other_worktrees(con, key, exclude_agent, False) if not pattern or path_matches(pattern, rel)]
+
+
+def claims_overlapping_other_worktrees(con: sqlite3.Connection, res: Resource, exclude_agent: int) -> List[Row]:
+    """Claims in other worktrees of the repository that overlap a path claim, relative to each checkout."""
+    if not res.is_path:
+        return []
+    found = []
+    for c, pattern, rel in _in_other_worktrees(con, res.key, exclude_agent, True):
+        if not pattern or overlaps(Resource(c["resource"], pattern, True), Resource(res.text, rel, True)):
+            found.append(c)
+    return found
+
+
 def claim(
     con: sqlite3.Connection,
     me: Row,
@@ -947,10 +1097,14 @@ def claim(
                     (note, ttl, t + ttl, mine["id"]),
                 )
             else:
+                ws = checkout_of(r.text) if r.is_path else None
                 con.execute(
                     "INSERT INTO claims(agent_id, resource, match_key, is_path, soft, note, ttl,"
-                    " created_at, expires_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)",
-                    (me["id"], r.text, r.key, int(r.is_path), note, ttl, t, t + ttl),
+                    " created_at, expires_at, root_key, repo_key) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+                    (
+                        me["id"], r.text, r.key, int(r.is_path), note, ttl, t, t + ttl,
+                        path_key(ws.root) if ws else None, ws.key if ws else None,
+                    ),
                 )
         for text, rows in conflicts.items():
             for owner in {row["agent_id"] for row in rows}:
@@ -1045,7 +1199,7 @@ def _tell_waiters(con: sqlite3.Connection, owner_name: str, claims: Sequence[Row
         con.execute("DELETE FROM gates WHERE key = ?", (key,))
 
 
-def touch_file(con: sqlite3.Connection, agent_id: int, path_text: str, key: str) -> None:
+def touch_file(con: sqlite3.Connection, agent_id: int, path_text: str, key: str, ws: Workspace) -> None:
     """Mark a file as recently edited by an agent (an automatic, soft claim)."""
     ttl = db.config_number(con, "touch_minutes") * 60
     t = now()
@@ -1061,8 +1215,8 @@ def touch_file(con: sqlite3.Connection, agent_id: int, path_text: str, key: str)
         else:
             con.execute(
                 "INSERT INTO claims(agent_id, resource, match_key, is_path, soft, ttl, created_at,"
-                " expires_at) VALUES (?, ?, ?, 1, 1, ?, ?, ?)",
-                (agent_id, path_text, key, ttl, t, t + ttl),
+                " expires_at, root_key, repo_key) VALUES (?, ?, ?, 1, 1, ?, ?, ?, ?, ?)",
+                (agent_id, path_text, key, ttl, t, t + ttl, path_key(ws.root), ws.key),
             )
 
 
@@ -1180,6 +1334,8 @@ def mark_events_seen(con: sqlite3.Connection, agent_id: int, event_id: Optional[
 
 
 def set_config(con: sqlite3.Connection, by: Row, key: str, value: str) -> None:
+    if by["kind"] != "human":
+        raise BoardError("Only humans can change the board's settings.")
     try:
         db.set_config(con, key, value)
     except ValueError as e:

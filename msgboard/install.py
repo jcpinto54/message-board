@@ -77,7 +77,58 @@ def without_ours(settings: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def with_ours(settings: Dict[str, Any]) -> Dict[str, Any]:
+# Agents use the board freely: its commands never need a permission prompt, and sandboxed shell
+# commands may write to its folder. (Human authority comes from the passphrase, not from this.)
+
+
+def allow_rules() -> List[str]:
+    return ["Bash(board:*)", f"Bash(python {SCRIPT.as_posix()}:*)"]
+
+
+def _is_our_rule(rule: Any) -> bool:
+    text = str(rule)
+    return text == "Bash(board:*)" or (text.startswith("Bash(python ") and text.endswith("board.py:*)"))
+
+
+def _is_our_path(path: Any, home: str) -> bool:
+    return os.path.normcase(os.path.abspath(os.path.expanduser(str(path)))) == os.path.normcase(os.path.abspath(home))
+
+
+def _drop_empty(data: Dict[str, Any], *keys: str) -> None:
+    """Remove data[keys[0]][keys[1]]... and its parents when they've become empty."""
+    chain = [data]
+    for k in keys[:-1]:
+        nxt = chain[-1].get(k)
+        if not isinstance(nxt, dict):
+            return
+        chain.append(nxt)
+    for k, holder in zip(reversed(keys), reversed(chain)):
+        if holder.get(k) in ([], {}):
+            del holder[k]
+
+
+def without_permissions(settings: Dict[str, Any], home: str) -> Dict[str, Any]:
+    data = copy.deepcopy(settings)
+    allow = (data.get("permissions") or {}).get("allow")
+    if isinstance(allow, list):
+        data["permissions"]["allow"] = [r for r in allow if not _is_our_rule(r)]
+        _drop_empty(data, "permissions", "allow")
+    writes = ((data.get("sandbox") or {}).get("filesystem") or {}).get("allowWrite")
+    if isinstance(writes, list):
+        data["sandbox"]["filesystem"]["allowWrite"] = [p for p in writes if not _is_our_path(p, home)]
+        _drop_empty(data, "sandbox", "filesystem", "allowWrite")
+    return data
+
+
+def with_permissions(settings: Dict[str, Any], home: str) -> Dict[str, Any]:
+    data = without_permissions(settings, home)
+    data.setdefault("permissions", {}).setdefault("allow", []).extend(allow_rules())
+    sandbox = data.setdefault("sandbox", {}).setdefault("filesystem", {})
+    sandbox.setdefault("allowWrite", []).append(os.path.abspath(home))
+    return data
+
+
+def with_ours(settings: Dict[str, Any], home: Optional[str] = None) -> Dict[str, Any]:
     data = without_ours(settings)
     hooks = data.setdefault("hooks", {})
     for event, matcher, arg, timeout in HOOKS:
@@ -85,7 +136,7 @@ def with_ours(settings: Dict[str, Any]) -> Dict[str, Any]:
         if matcher:
             group = {"matcher": matcher, **group}
         hooks.setdefault(event, []).append(group)
-    return data
+    return with_permissions(data, home) if home is not None else data
 
 
 def load_settings(path: Path) -> Dict[str, Any]:
@@ -116,22 +167,24 @@ def save_settings(path: Path, data: Dict[str, Any]) -> Optional[Path]:
     return backup
 
 
-def install(settings_path: Path, dry_run: bool = False, command: bool = True) -> List[str]:
-    updated = with_ours(load_settings(settings_path))
+def install(settings_path: Path, home: str, dry_run: bool = False, command: bool = True) -> List[str]:
+    updated = with_ours(load_settings(settings_path), home)
     if dry_run:
-        return [f"Would set these hooks in {settings_path}:", json.dumps(updated["hooks"], indent=2)]
+        shown = {k: updated[k] for k in ("hooks", "permissions", "sandbox")}
+        return [f"Would set these in {settings_path}:", json.dumps(shown, indent=2)]
     backup = save_settings(settings_path, updated)
     lines = [f"Hooks installed in {settings_path}" + (f" (backup: {backup.name})" if backup else "") + "."]
+    lines.append(f"Agents can run board commands without permission prompts (and write to {home} when sandboxed).")
     if command:
         lines += install_command()
     lines.append("Running Claude Code sessions reload settings within a few seconds; `board doctor` checks everything.")
     return lines
 
 
-def uninstall(settings_path: Path, command: bool = True) -> List[str]:
+def uninstall(settings_path: Path, home: str, command: bool = True) -> List[str]:
     lines = []
     current = load_settings(settings_path)
-    updated = without_ours(current)
+    updated = without_permissions(without_ours(current), home)
     if updated != current:
         backup = save_settings(settings_path, updated)
         lines.append(f"Hooks removed from {settings_path}" + (f" (backup: {backup.name})" if backup else "") + ".")
@@ -139,7 +192,7 @@ def uninstall(settings_path: Path, command: bool = True) -> List[str]:
         lines.append(f"No board hooks in {settings_path}.")
     if command:
         lines += uninstall_command()
-    lines.append(f"The board data stays in {Path.home() / '.message-board'}; delete that folder to erase it.")
+    lines.append(f"The board data stays in {home}; delete that folder to erase it.")
     return lines
 
 
@@ -239,6 +292,9 @@ def describe(settings_path: Path) -> List[str]:
             lines.append(f"hooks: PROBLEM: {event} runs {h['command']}, which doesn't exist")
         elif scripts and not Path(scripts[0]).exists():
             lines.append(f"hooks: PROBLEM: {event} runs {scripts[0]}, which doesn't exist")
+    allow = (settings.get("permissions") or {}).get("allow") or []
+    if found and not any(_is_our_rule(r) for r in allow):
+        lines.append("permissions: PROBLEM: agents will be asked before each board command (rerun `board install`)")
     if found == 0:
         lines.insert(0, f"hooks: not installed in {settings_path} (run `board install`)")
     elif found < len(HOOKS):

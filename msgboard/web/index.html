@@ -224,19 +224,30 @@ dialog::backdrop { background: rgba(0, 0, 0, .4); }
 <div id="toasts"></div>
 <script nonce="{{NONCE}}">
 "use strict";
-const TOKEN = "{{TOKEN}}";
+// The token arrives in the link's fragment (#t=...), which never reaches the server. Keep it for
+// reloads of this tab and take it out of the address bar.
+const TOKEN = (() => {
+  const embedded = "{{TOKEN}}";  // only the demo board embeds it
+  const m = /(?:^#|&)t=([^&]+)/.exec(location.hash);
+  if (m) {
+    try { sessionStorage.setItem("board.token", m[1]); } catch (e) { /* private mode */ }
+    history.replaceState(null, "", location.pathname + location.search);
+    return m[1];
+  }
+  try { return sessionStorage.getItem("board.token") || embedded; } catch (e) { return embedded; }
+})();
 const KINDS = ["message", "thread", "group", "task", "decision", "question", "finding"];
 const REASONS = { mention: "mentioned you", reply: "replied to you", subscribed: "posted", edited: "edited your post" };
 const FILTERS = {
   all: null,
   posts: ["post"],
-  coordination: ["blocked", "override", "overlap", "git", "claim", "release", "force", "expire", "pause", "resume", "config"],
+  coordination: ["blocked", "override", "overlap", "git", "claim", "release", "force", "expire", "pause", "resume", "config", "passphrase"],
   presence: ["join", "end", "status"],
 };
 const ICONS = {
   post: "\u{1F4AC}", blocked: "⛔", override: "⚠", overlap: "⚠", git: "⚠", claim: "\u{1F512}",
   release: "\u{1F513}", force: "\u{1F513}", expire: "⌛", pause: "⏸", resume: "▶", config: "⚙",
-  join: "+", end: "−", status: "✎", edit: "✎",
+  join: "+", end: "−", status: "✎", edit: "✎", passphrase: "\u{1F511}",
 };
 const $ = (id) => document.getElementById(id);
 
@@ -256,6 +267,7 @@ let skew = 0;
 let tick = 0;
 let busy = false;
 let knownInbox = null;
+let warnedToken = false;
 const sigs = {};
 const expanded = new Set();
 let expandedInit = false;
@@ -676,6 +688,7 @@ function agentCard(a) {
       h("span", { class: "muted small nowrap", title: "last activity " + when(a.last_seen) }, seen)),
     where ? h("div", { class: "muted small" }, where) : null,
     a.status ? h("div", { class: "astatus" }, a.status) : null,
+    a.waiting ? h("div", { class: "muted small" }, "⏳ waiting on " + a.waiting) : null,
     a.paused ? h("div", { class: "pausebox" }, "Paused by @" + (a.paused_by || "?") + ": " + (a.pause_reason || "")) : null,
     hard.length ? h("div", { class: "aclaims" }, hard.map(claimChip)) : null,
     soft.length ? h("div", { class: "muted small", title: soft.map((c) => c.display + " (" + ago(c.edited_at) + ")").join("\n") },
@@ -973,6 +986,7 @@ async function refresh(force) {
   } catch (e) {
     $("live").className = "live bad";
     $("live").title = "Disconnected: " + e.message;
+    if (/token/.test(e.message) && !warnedToken) { warnedToken = true; toast(e.message, "bad"); }
     if (/token/.test(e.message)) {
       $("banner").replaceChildren(h("div", { class: "bn bad" }, "The board server restarted. Reload this page to reconnect."));
     }

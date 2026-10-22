@@ -1,8 +1,9 @@
 """The board's web GUI: watch what the agents are doing and intervene as a human.
 
-A small stdlib HTTP server bound to localhost. Every API call needs the per-run token embedded
-in the page, and requests must name a local Host, so other websites can't read the board or
-post to agents through it.
+A small stdlib HTTP server bound to localhost. Every API call needs the per-run token, and requests
+must name a local Host, so other websites can't read the board or post to agents through it. The
+token reaches the browser only in the fragment of the link `board serve` opens (never sent to the
+server, never in the page), so agents on the same machine can't fetch it either.
 """
 
 from __future__ import annotations
@@ -30,16 +31,18 @@ GONE_SHOWN_S = 3 * 86400  # participants that left are listed for a few days
 EVENTS_SENT = 300
 NODE_LIMIT = 800  # a thread bigger than this is shown one level at a time
 CHILDREN_LIMIT = 200
+FORBIDDEN = "missing or wrong token: open the link that `board serve` printed"
 
 
 class App:
     """Board operations for the GUI, acting as one human participant."""
 
-    def __init__(self, home: str, human: str, cwd: str):
+    def __init__(self, home: str, human: str, cwd: str, embed_token: bool = False):
         self.home = home
         self.human = human
         self.cwd = cwd
         self.token = secrets.token_urlsafe(24)
+        self.embed_token = embed_token  # only for the demo's throwaway board
         self._heartbeat = 0.0
         self._purged = time.time()
         con = self.connect()
@@ -91,6 +94,7 @@ class App:
                     "paused": a["paused_at"] is not None,
                     "pause_reason": a["pause_reason"],
                     "paused_by": names.get(a["paused_by"], ("", ""))[0] if a["paused_by"] else None,
+                    "waiting": model.waiting_on(a, t),
                 }
             )
 
@@ -397,7 +401,7 @@ class Handler(BaseHTTPRequestHandler):
         if not url.path.startswith("/api/"):
             return self._json(404, {"error": "not found"})
         if not self._authorized():
-            return self._json(403, {"error": "missing or wrong token; reload the page"})
+            return self._json(403, {"error": FORBIDDEN})
         if url.path == "/api/state":
             query = parse_qs(url.query)
             rev = int(query.get("rev", ["0"])[0] or 0)
@@ -412,7 +416,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._local_host():
             return self._json(403, {"error": "forbidden host"})
         if not self._authorized():
-            return self._json(403, {"error": "missing or wrong token; reload the page"})
+            return self._json(403, {"error": FORBIDDEN})
         if not (self.headers.get("Content-Type") or "").startswith("application/json"):
             return self._json(415, {"error": "send JSON"})
         length = int(self.headers.get("Content-Length") or 0)
@@ -429,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
         nonce = secrets.token_urlsafe(16)
         with open(PAGE, encoding="utf-8") as f:
             html = f.read()
-        html = html.replace("{{TOKEN}}", self.app.token).replace("{{NONCE}}", nonce)
+        html = html.replace("{{TOKEN}}", self.app.token if self.app.embed_token else "").replace("{{NONCE}}", nonce)
         csp = (
             "default-src 'none'; "
             f"script-src 'nonce-{nonce}'; "
@@ -462,16 +466,21 @@ def start(app: App, port: int) -> Server:
     raise BoardError(f"No free port from {port} to {port + 19}: {last_error}")
 
 
-def serve(home: str, human: str, cwd: str, port: int, open_browser: bool, out: TextIO) -> int:
-    app = App(home, human, cwd)
+def serve(
+    home: str, human: str, cwd: str, port: int, open_browser: bool, out: TextIO, embed_token: bool = False
+) -> int:
+    app = App(home, human, cwd, embed_token)
     server = start(app, port)
     con = app.connect()
     try:
         name = app.me(con)["name"]
     finally:
         con.close()
-    url = f"http://127.0.0.1:{server.server_address[1]}/"
-    out.write(f"Message board GUI: {url}\nYou appear as @{name}. Ctrl+C stops the server.\n")
+    url = f"http://127.0.0.1:{server.server_address[1]}/#t={app.token}"
+    out.write(
+        f"Message board GUI: {url}\nYou appear as @{name}. The link is your key: don't share it with agents. "
+        "Ctrl+C stops the server.\n"
+    )
     out.flush()
     if open_browser:
         webbrowser.open(url)

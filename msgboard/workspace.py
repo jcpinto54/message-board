@@ -133,6 +133,11 @@ def parse_resource(spec: str, cwd: str) -> Resource:
     return Resource(display_path(spec, cwd), path_key(spec, cwd), True)
 
 
+def checkout_of(path_text: str) -> Workspace:
+    """The worktree and repository a claimed path or glob lies in."""
+    return locate(literal_base(path_text) or path_text)
+
+
 def is_glob(key: str) -> bool:
     return any(c in key for c in GLOB_CHARS)
 
