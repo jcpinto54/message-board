@@ -17,11 +17,24 @@ TREE_CHILD_LIMIT = 15
 READ_CHILD_LIMIT = 30
 
 
-def invocation() -> str:
-    """How agents should call the CLI: `board` when installed, otherwise python + script path."""
+def on_path(name: str) -> Optional[str]:
+    """Where a shell would find the command `name`.
+
+    Programs that pyenv starts get their Python's own folder put at the front of PATH, which the
+    user's shells don't have (they go through pyenv's shims), so those folders don't count."""
     import shutil
 
-    if shutil.which("board"):
+    entries = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    root = os.environ.get("PYENV_ROOT")
+    if root:
+        versions = os.path.normcase(os.path.join(os.path.abspath(root), "versions")) + os.sep
+        entries = [p for p in entries if not os.path.normcase(os.path.abspath(p) + os.sep).startswith(versions)]
+    return shutil.which(name, path=os.pathsep.join(entries))
+
+
+def invocation() -> str:
+    """How agents should call the CLI: `board` when installed, otherwise python + script path."""
+    if on_path("board"):
         return "board"
     here = os.path.dirname(os.path.abspath(__file__))
     script = os.path.join(os.path.dirname(here), "board.py").replace("\\", "/")

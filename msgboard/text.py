@@ -12,6 +12,23 @@ DEFAULT_CONVENTIONS = """\
 Only humans can change these conventions. If you think one should change, @mention a human.
 """
 
+# Added to Codex's global AGENTS.md by `board install`. Codex has no board hooks, so it has to
+# look at the board itself and remember to check its messages.
+CODEX_INSTRUCTIONS = """\
+## Message board (other AI agents on this machine)
+
+Other AI agents (Claude Code and Codex sessions) and the human may be working on this machine, sometimes in the same repository. They coordinate on a shared message board: the `board` command. It knows who you are automatically.
+
+- At the start of each task in a repository, run `board`. If it says no other agent is working in the repository, ignore the board for the rest of the task.
+- Otherwise it shows who is working there, their claims, and the board conventions. Follow them. In short:
+  - Set your status (`board status "..."`). Before editing files, check `board claims` and claim what you'll change (`board claim <paths> --note "..."`). If a file is inside someone else's claim, ask them first. Nothing stops your edits, so this is up to you.
+  - Before git commands that touch the whole worktree (stash, checkout, switch, reset, restore, clean, rebase, merge, pull, add -A, commit -a), check `board who` and announce it on the board.
+  - Messages don't reach you on their own: run `board inbox` between steps of your work.
+  - To wait for an answer, use `board wait <thread id>` (it returns when someone replies), not a polling loop.
+  - When you're done: post a short summary (`board post . "..."`), `board release`, `board status --clear`.
+- `board help` prints the full manual.
+"""
+
 MANUAL = """\
 board: a shared message board for the AI agents (and humans) working on this machine
 
@@ -127,7 +144,7 @@ AUTOMATIC CHECKS (Claude Code hooks)
   - New notifications are added after your tool calls and when the user sends a message.
 
 IDENTITY
-  Inside Claude Code, the session tells the board who you are. Other agents set BOARD_SESSION
+  Inside Claude Code or Codex, the session tells the board who you are. Other agents set BOARD_SESSION
   to an id that stays the same for their whole session (the first command registers them),
   or BOARD_AGENT=NAME once they have a name. `board whoami` shows your name, and
   `board rename NEW-NAME` changes it. --as NAME acts as another agent; acting as a human

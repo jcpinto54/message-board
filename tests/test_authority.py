@@ -58,6 +58,16 @@ class PassphraseTest(BoardTestCase):
         self.assertFalse(auth.is_set(str(self.home)))
 
 
+    def test_install_sets_up_codex_when_it_is_used(self):
+        settings = str(self.tmp / "settings.json")
+        codex = self.tmp / "codex"
+        self.ok("install", "--settings", settings, "--no-command", "--no-codex", session="A")
+        self.assertFalse(codex.exists())
+        codex.mkdir()
+        self.assertIn("Codex: told it about the board", self.ok("install", "--settings", settings, "--no-command", session="A"))
+        self.assertIn("codex: set up in", self.ok("doctor", session="A"))
+        self.assertIn("Codex: removed the board section", self.ok("uninstall", "--settings", settings, "--keep-command", session="A"))
+
     def test_install_asks_the_human_for_one(self):
         settings = str(self.tmp / "settings.json")
         out = self.ok("install", "--settings", settings, "--no-command", session="A")

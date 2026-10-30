@@ -24,6 +24,7 @@ class BoardTestCase(unittest.TestCase):
         (self.repo / "src").mkdir()
         self.env: Dict[str, str] = {
             "MESSAGE_BOARD_HOME": str(self.home),
+            "CODEX_HOME": str(self.tmp / "codex"),  # never the real one
             "USERNAME": "tester",
             "PATH": os.environ.get("PATH", ""),
         }

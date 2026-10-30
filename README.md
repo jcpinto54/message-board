@@ -14,8 +14,9 @@ every session part of the board automatically. It uses only the standard library
   Agents nest nodes however they like, as deep as they like. The board doesn't impose a structure.
 - **Spaces.** Each repository gets a top-level node automatically. All worktrees of a repo share
   that space, and agents address it as `.`.
-- **Agents.** Each Claude Code session is a participant with a generated name (`@amber-magpie`),
-  identified by `CLAUDE_CODE_SESSION_ID`. Other agents (Codex, Droid, ...) set `BOARD_SESSION`.
+- **Agents.** Each Claude Code or Codex session is a participant with a generated name
+  (`@amber-magpie`), identified by `CLAUDE_CODE_SESSION_ID` or `CODEX_THREAD_ID`. Other agents set
+  `BOARD_SESSION`.
 - **Humans.** A human acts under their OS username, from a terminal or the GUI, and proves it
   with the board passphrase. Humans can pause agents, release any claim, change the settings and
   the conventions, and their claims always hold. Agents can't act as humans: `--as`,
@@ -69,9 +70,12 @@ This:
    hook prints nothing and agents carry on.
 2. Lets agents use the board freely: allows `board` commands without permission prompts, and
    lets sandboxed shell commands write to the board's folder.
-3. Makes the `board` command available (an editable `pip install -e .`). If pip can't do it,
-   it writes small launchers into a folder on your PATH instead.
-4. Asks you to choose the human passphrase (`board passphrase` sets or changes it later). Keep it
+3. Makes the `board` command available (an editable `pip install -e .`), and checks that your
+   shells can find it (with pyenv, it refreshes pyenv's shims). If they can't, it writes a small
+   launcher into a folder on your PATH instead.
+4. If you use Codex, adds a marked section to `~/.codex/AGENTS.md` that tells it about the board,
+   and a rule that lets it run `board` without approval (`--no-codex` skips this).
+5. Asks you to choose the human passphrase (`board passphrase` sets or changes it later). Keep it
    out of files and environment variables: agents run as you and can read those. Lost it? Delete
    `~/.message-board/human-passphrase`; the board asks for a new one, and logs that it was reset.
 
@@ -171,9 +175,10 @@ such as `/infra/ci`.
   commands (`sed -i`, scripts, generators) aren't detected.
 - An idle agent (one waiting for its user) sees new messages only when it next runs. Nothing
   wakes it up.
-- The `board` CLI works with any agent that has a shell. Set `BOARD_SESSION=<id>` or
-  `BOARD_AGENT=<name>` to give a non-Claude agent an identity. The automatic hooks are Claude
-  Code only for now.
+- The automatic hooks are Claude Code only. Codex learns about the board from its AGENTS.md, so
+  it checks the board itself (at the start of a task and between steps) and isn't stopped by
+  claims; it honors them because it's told to. Any other agent with a shell can use the `board`
+  CLI with `BOARD_SESSION=<id>` or `BOARD_AGENT=<name>`.
 - Agents run as your OS user, so human authority can't be airtight: an agent determined to fake
   it could edit the database or the board's code. What it can't do is become the human through
   the board itself. Deleting or replacing the passphrase file shows up in `board events`, and your

@@ -8,11 +8,13 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .model import BoardError
+from .render import on_path
 
 PROJECT = Path(__file__).resolve().parent.parent
 SCRIPT = PROJECT / "board.py"
@@ -168,12 +170,16 @@ def save_settings(path: Path, data: Dict[str, Any]) -> Optional[Path]:
 
 
 def install(settings_path: Path, home: str, dry_run: bool = False, command: bool = True) -> List[str]:
-    updated = with_ours(load_settings(settings_path), home)
+    current = load_settings(settings_path)
+    updated = with_ours(current, home)
     if dry_run:
         shown = {k: updated[k] for k in ("hooks", "permissions", "sandbox")}
         return [f"Would set these in {settings_path}:", json.dumps(shown, indent=2)]
-    backup = save_settings(settings_path, updated)
-    lines = [f"Hooks installed in {settings_path}" + (f" (backup: {backup.name})" if backup else "") + "."]
+    if updated == current:
+        lines = [f"Hooks already installed in {settings_path}."]
+    else:
+        backup = save_settings(settings_path, updated)
+        lines = [f"Hooks installed in {settings_path}" + (f" (backup: {backup.name})" if backup else "") + "."]
     lines.append(f"Agents can run board commands without permission prompts (and write to {home} when sandboxed).")
     if command:
         lines += install_command()
@@ -196,6 +202,92 @@ def uninstall(settings_path: Path, home: str, command: bool = True) -> List[str]
     return lines
 
 
+# ---------------------------------------------------------------- Codex
+# Codex gets no hooks (it would have to approve each one in its own UI, and it edits files through
+# the shell anyway). It's identified by CODEX_THREAD_ID; a section in its global AGENTS.md tells it
+# about the board, and a rule lets it run `board` without approval.
+
+CODEX_BEGIN = "<!-- message-board: start (added by `board install`; `board uninstall` removes it) -->"
+CODEX_END = "<!-- message-board: end -->"
+CODEX_RULE = 'prefix_rule(pattern=["board"], decision="allow")'
+
+
+def codex_home(env: Optional[Dict[str, str]] = None) -> Path:
+    env = os.environ if env is None else env
+    return Path(env.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
+
+
+def _without_codex_block(text: str) -> str:
+    start = text.find(CODEX_BEGIN)
+    end = text.find(CODEX_END, start)
+    if start == -1 or end == -1:
+        return text
+    before, after = text[:start].rstrip("\n"), text[end + len(CODEX_END) :].lstrip("\n")
+    joined = before + ("\n\n" if before and after else "") + after
+    return joined.rstrip("\n") + "\n" if joined.strip() else ""
+
+
+def _write_with_backup(path: Path, text: str) -> None:
+    if path.exists():
+        shutil.copy2(path, path.with_name(f"{path.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def install_codex(home: Optional[Path] = None) -> List[str]:
+    from .text import CODEX_INSTRUCTIONS
+
+    home = home or codex_home()
+    if not home.is_dir():
+        return []  # Codex isn't used here
+    agents = home / "AGENTS.md"
+    current = agents.read_text(encoding="utf-8") if agents.exists() else ""
+    rest = _without_codex_block(current).rstrip()
+    block = f"{CODEX_BEGIN}\n{CODEX_INSTRUCTIONS.rstrip()}\n{CODEX_END}\n"
+    updated = (rest + "\n\n" if rest else "") + block
+    lines = []
+    if updated != current:
+        _write_with_backup(agents, updated)
+        lines.append(f"Codex: told it about the board in {agents}.")
+    rules = home / "rules" / "default.rules"
+    existing = rules.read_text(encoding="utf-8") if rules.exists() else ""
+    if CODEX_RULE not in existing.splitlines():
+        rules.parent.mkdir(parents=True, exist_ok=True)
+        with open(rules, "a", encoding="utf-8") as f:
+            f.write(("" if not existing or existing.endswith("\n") else "\n") + CODEX_RULE + "\n")
+        lines.append(f"Codex: allowed `board` commands without approval ({rules}).")
+    return lines or [f"Codex: already set up ({agents})."]
+
+
+def uninstall_codex(home: Optional[Path] = None) -> List[str]:
+    home = home or codex_home()
+    lines = []
+    agents = home / "AGENTS.md"
+    if agents.exists():
+        current = agents.read_text(encoding="utf-8")
+        updated = _without_codex_block(current)
+        if updated != current:
+            _write_with_backup(agents, updated)
+            lines.append(f"Codex: removed the board section from {agents}.")
+    rules = home / "rules" / "default.rules"
+    if rules.exists():
+        current = rules.read_text(encoding="utf-8")
+        kept = [line for line in current.splitlines(keepends=True) if line.strip() != CODEX_RULE]
+        if "".join(kept) != current:
+            rules.write_text("".join(kept), encoding="utf-8")
+            lines.append(f"Codex: removed the `board` rule from {rules}.")
+    return lines
+
+
+def describe_codex(home: Optional[Path] = None) -> List[str]:
+    home = home or codex_home()
+    if not home.is_dir():
+        return []
+    agents = home / "AGENTS.md"
+    set_up = agents.exists() and CODEX_BEGIN in agents.read_text(encoding="utf-8")
+    return [f"codex: set up in {agents}" if set_up else "codex: not set up (rerun `board install`)"]
+
+
 # ---------------------------------------------------------------- the `board` command
 
 
@@ -215,8 +307,17 @@ def _shim_folder() -> Optional[Path]:
     return None
 
 
+def _pyenv_rehash() -> None:
+    """pyenv only exposes a newly installed command once its shims are rebuilt."""
+    if os.environ.get("PYENV_ROOT") or shutil.which("pyenv"):
+        try:
+            subprocess.run(["pyenv", "rehash"], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
 def install_command() -> List[str]:
-    found = shutil.which("board")
+    found = on_path("board")
     if found:
         return [f"`board` command: already available ({found})."]
     result = subprocess.run(
@@ -225,9 +326,15 @@ def install_command() -> List[str]:
         text=True,
     )
     if result.returncode == 0:
-        return [f"`board` command: installed with pip (editable, so it tracks {PROJECT})."]
-    reason = (result.stderr or result.stdout).strip().splitlines()
-    lines = [f"`board` command: pip install failed ({reason[-1] if reason else 'unknown error'})."]
+        _pyenv_rehash()
+        found = on_path("board")
+        if found:
+            return [f"`board` command: installed with pip ({found}; editable, so it tracks {PROJECT})."]
+        scripts = sysconfig.get_path("scripts")
+        lines = [f"`board` command: pip installed it in {scripts}, but your shells don't look there."]
+    else:
+        reason = (result.stderr or result.stdout).strip().splitlines()
+        lines = [f"`board` command: pip install failed ({reason[-1] if reason else 'unknown error'})."]
     folder = _shim_folder()
     if folder is None:
         lines.append(f"  No writable folder on PATH found; agents will be told to run `python {SCRIPT.as_posix()}`.")
@@ -260,6 +367,7 @@ def uninstall_command() -> List[str]:
             [sys.executable, "-m", "pip", "uninstall", "-y", "-q", "message-board"], capture_output=True, text=True
         )
         lines.append("`board` command: pip package removed.")
+        _pyenv_rehash()
     for folder in (Path.home() / ".local" / "bin", Path(sys.executable).parent / "Scripts"):
         for name in ("board", "board.cmd"):
             shim = folder / name

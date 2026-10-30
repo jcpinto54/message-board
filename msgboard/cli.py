@@ -101,6 +101,9 @@ class Context:
         session = self.env.get("CLAUDE_CODE_SESSION_ID")
         if session:
             return model.ensure_agent(self.con, session, self.cwd)
+        session = self.env.get("CODEX_THREAD_ID")  # set by Codex for the commands it runs
+        if session:
+            return model.ensure_agent(self.con, f"codex:{session}", self.cwd, kind="codex")
         session = self.env.get("BOARD_SESSION")
         if session:
             return model.ensure_agent(self.con, session, self.cwd, kind="agent")
@@ -221,7 +224,17 @@ def _special_resource(spec: str, cwd: str) -> str:
 
 
 def cmd_brief(ctx: Context, args: argparse.Namespace) -> int:
-    ctx.say(render.briefing(ctx.con, ctx.viewer(), ctx.command))
+    me = ctx.viewer()
+    alone = me["kind"] != "human" and me["paused_at"] is None and not model.active_in_space(ctx.con, me)
+    if alone and not args.full:
+        # Same rule as the hooks: the board stays out of the way of an agent working alone.
+        ctx.say(f"You are @{me['name']}. No other agent is working in this repository right now, so you can ignore "
+                f"the board for this task. (`{ctx.command} --full` shows the whole briefing.)")
+        text = render.delivery(ctx.con, me, ctx.command, direct_only=True)
+        if text:
+            ctx.say(text)
+        return 0
+    ctx.say(render.briefing(ctx.con, me, ctx.command))
     return 0
 
 
@@ -717,7 +730,7 @@ def cmd_doctor(ctx: Context, args: argparse.Namespace) -> int:
     ctx.say(f"command agents are told to use: {ctx.command}")
     if ctx.command != "board":
         ctx.say("  note: `board` isn't on PATH; `board install` adds it.")
-    for line in install.describe(install.default_settings_path()):
+    for line in install.describe(install.default_settings_path()) + install.describe_codex(install.codex_home(ctx.env)):
         ctx.say(line)
         ok = ok and "PROBLEM" not in line
     try:
@@ -736,6 +749,9 @@ def cmd_install(ctx: Context, args: argparse.Namespace) -> int:
     settings = Path(args.settings).expanduser() if args.settings else install.default_settings_path()
     for line in install.install(settings, ctx.home, dry_run=args.dry_run, command=not args.no_command):
         ctx.say(line)
+    if not args.dry_run and not args.no_codex:
+        for line in install.install_codex(install.codex_home(ctx.env)):
+            ctx.say(line)
     if not args.dry_run and not auth.is_set(ctx.home):
         agent = any(ctx.env.get(k) for k in ("CLAUDE_CODE_SESSION_ID", "BOARD_SESSION", "BOARD_AGENT", "CLAUDECODE"))
         if ctx.interactive and not agent:
@@ -753,6 +769,8 @@ def cmd_uninstall(ctx: Context, args: argparse.Namespace) -> int:
 
     settings = Path(args.settings).expanduser() if args.settings else install.default_settings_path()
     for line in install.uninstall(settings, ctx.home, command=not args.keep_command):
+        ctx.say(line)
+    for line in install.uninstall_codex(install.codex_home(ctx.env)):
         ctx.say(line)
     return 0
 
@@ -820,6 +838,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
     )
     parser.add_argument("--version", action="version", version=f"board {__version__}")
+    parser.add_argument("--full", action="store_true", help="the whole briefing, even when you're alone in the repo")
     sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
 
     def add(name: str, text: str) -> argparse.ArgumentParser:
@@ -921,6 +940,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--settings", help="settings.json to edit (default ~/.claude/settings.json)")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--no-command", action="store_true", help="don't install the `board` command")
+    p.add_argument("--no-codex", action="store_true", help="don't tell Codex about the board")
     p = add("uninstall", "remove the Claude Code hooks (and the `board` command)")
     p.add_argument("--settings")
     p.add_argument("--keep-command", action="store_true")

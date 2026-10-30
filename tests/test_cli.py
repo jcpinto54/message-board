@@ -20,6 +20,23 @@ class IdentityTest(BoardTestCase):
         out = self.ok("whoami", session=None)
         self.assertIn("@tester (human)", out)
 
+    def test_codex_sessions_are_recognized(self):
+        env = {"CODEX_THREAD_ID": "01a16979-724c"}
+        out = self.ok("whoami", session=None, interactive=False, env=env)
+        self.assertIn("(codex)", out)
+        self.assertEqual(out, self.ok("whoami", session=None, interactive=False, env=env))  # same agent each time
+
+    def test_the_briefing_command_is_short_for_an_agent_alone(self):
+        out = self.ok(session="A")
+        self.assertIn("No other agent is working in this repository", out)
+        self.assertNotIn("Board conventions", out)
+        a = self.name_of("A")
+        self.ok("post", ".", f"@{a} ping", session=None)
+        self.assertIn("ping", self.ok(session="A"))  # but messages for it still show
+        self.ok("status", "here too", session="B")
+        self.assertIn("Board conventions", self.ok(session="A"))
+        self.assertIn("Board conventions", self.ok(session=None))  # humans always get it all
+
     def test_as_and_rename(self):
         a = self.name_of("A")
         self.ok("rename", "planner", session="A")
@@ -94,7 +111,7 @@ class ConversationTest(BoardTestCase):
         self.assertIn("CI", self.ok("tree", "--all", session="A"))
 
     def test_conventions_are_shown_and_only_humans_change_them(self):
-        out = self.ok(session="A")
+        out = self.ok("--full", session="A")
         self.assertIn("Board conventions", out)
         self.name_of("B")
         code, _, err = self.run_cli("edit", "conventions", "--body", "1. Anything goes.", session="A")
